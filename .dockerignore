@@ -1,0 +1,56 @@
+# .dockerignore file for backend
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Virtual environments
+.venv
+venv
+env
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+.eggs
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+.env.local
+
+# Development
+.pytest_cache
+.coverage
+htmlcov
+
+# Dependencies (will be installed during build)
+node_modules
+npm-debug.log
+
+# Documentation
+docs
+*.md
+LICENSE
+
+# Testing
+tests
+test_*.py
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
