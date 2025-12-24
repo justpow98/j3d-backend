@@ -1,0 +1,66 @@
+import os
+import sys
+import argparse
+from pathlib import Path
+
+# Add parent directory to path to import app
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from config import _normalize_db_url
+from app import create_app
+from models import db
+from flask_migrate import init as migrate_init, migrate as migrate_migrate, upgrade as migrate_upgrade
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate and apply database migrations for J3D backend")
+    parser.add_argument("--config", default="development", help="App config name (development, production, testing)")
+    parser.add_argument("--url", dest="url", default=os.getenv("DATABASE_URL"), help="Database URL; defaults to env DATABASE_URL")
+    parser.add_argument("--message", "-m", default="Auto-generated migration", help="Migration message")
+    parser.add_argument("--apply", action="store_true", help="Apply migrations after generating")
+    args = parser.parse_args()
+
+    db_url = _normalize_db_url(args.url) if args.url else None
+    if db_url:
+        os.environ["DATABASE_URL"] = db_url
+
+    app = create_app(args.config)
+    
+    migrations_dir = Path(__file__).parent.parent / "migrations"
+    
+    with app.app_context():
+        # Initialize migrations if needed
+        if not migrations_dir.exists():
+            print("Initializing migrations directory...")
+            try:
+                migrate_init(directory=str(migrations_dir))
+                print(f"✓ Created migrations directory at {migrations_dir}")
+            except Exception as e:
+                print(f"✗ Migration init failed: {e}")
+                return 1
+        
+        # Generate migration
+        print(f"Generating migration: {args.message}")
+        try:
+            migrate_migrate(directory=str(migrations_dir), message=args.message)
+            print(f"✓ Migration generated successfully")
+        except Exception as e:
+            print(f"✗ Migration generation failed: {e}")
+            print("  (This is normal if no schema changes detected)")
+        
+        # Apply migrations if requested
+        if args.apply:
+            print("Applying migrations...")
+            try:
+                migrate_upgrade(directory=str(migrations_dir))
+                print(f"✓ Migrations applied to {app.config['SQLALCHEMY_DATABASE_URI']}")
+            except Exception as e:
+                print(f"✗ Migration upgrade failed: {e}")
+                return 1
+    
+    print(f"\n✓ Database config={args.config} at {app.config['SQLALCHEMY_DATABASE_URI']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

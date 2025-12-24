@@ -1,4 +1,5 @@
 # Multi-stage build for Python backend
+# Version: 2.0.0
 FROM python:3.11-slim as builder
 
 # Set working directory
@@ -7,6 +8,7 @@ WORKDIR /app
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
@@ -15,6 +17,11 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Final stage - minimal runtime image
 FROM python:3.11-slim
+
+# Install postgresql-client for pg_isready
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for running the application
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -28,14 +35,19 @@ COPY --from=builder /root/.local /home/appuser/.local
 # Copy application code
 COPY --chown=appuser:appuser . .
 
+# Copy and set entrypoint script permissions
+COPY --chown=appuser:appuser docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Create necessary directories
-RUN mkdir -p /app/data && chown appuser:appuser /app/data
+RUN mkdir -p /app/data /app/instance && chown -R appuser:appuser /app/data /app/instance
 
 # Set environment variables
 ENV PATH=/home/appuser/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FLASK_ENV=production
+    FLASK_CONFIG=production \
+    AUTO_MIGRATE=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -46,6 +58,9 @@ USER appuser
 
 # Expose port
 EXPOSE 5000
+
+# Use entrypoint for database initialization
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Run the application
 CMD ["python", "app.py"]
