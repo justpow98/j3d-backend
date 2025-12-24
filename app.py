@@ -236,22 +236,26 @@ def create_app(config_name='development'):
                     start_dt = datetime.fromisoformat(start_date)
                     query = query.filter(Order.created_at >= start_dt)
                 except ValueError:
+                    # Invalid start_date format; ignore this filter and proceed without it
                     pass
             if end_date:
                 try:
                     end_dt = datetime.fromisoformat(end_date)
                     query = query.filter(Order.created_at <= end_dt)
                 except ValueError:
+                    # Invalid end_date format; ignore this filter and proceed without it
                     pass
             if min_total:
                 try:
                     query = query.filter(Order.total_amount >= float(min_total))
                 except ValueError:
+                    # Invalid min_total value; ignore this filter and proceed without it
                     pass
             if max_total:
                 try:
                     query = query.filter(Order.total_amount <= float(max_total))
                 except ValueError:
+                    # Invalid max_total value; ignore this filter and proceed without it
                     pass
             if product:
                 query = query.join(Order.items).filter(OrderItem.title.ilike(f"%{product}%"))
@@ -1307,7 +1311,6 @@ def create_app(config_name='development'):
                         qty = item.quantity or 1
                         material_cost = (profile.material_cost or 0) * qty
                         overhead_cost = (profile.overhead_cost or 0) * qty
-                        labor_cost = 0  # placeholder if labor rate is added later
                         products[product_key]['material_cost'] += material_cost
                         products[product_key]['overhead_cost'] += overhead_cost
                         products[product_key]['labor_minutes'] += (profile.labor_minutes or 0) * qty
@@ -1664,8 +1667,6 @@ def create_app(config_name='development'):
             
             if not current_user.shop_id:
                 return jsonify({'error': 'No shop associated with account'}), 404
-            
-            etsy_api = EtsyAPI(current_user.access_token)
             
             # Fetch recent conversations (Etsy API v3: /shops/{shop_id}/conversations)
             headers = {
