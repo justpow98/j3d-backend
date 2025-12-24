@@ -59,7 +59,7 @@ def create_app(config_name='development'):
             url, state, code_verifier = EtsyOAuth.get_authorization_url()
             return jsonify({'auth_url': url, 'code_verifier': code_verifier}), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/auth/callback', methods=['POST'])
     def oauth_callback():
@@ -139,7 +139,7 @@ def create_app(config_name='development'):
             print(f"DEBUG: Exception occurred: {str(e)}")
             import traceback
             traceback.print_exc()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/auth/logout', methods=['POST'])
     @token_required
@@ -210,7 +210,7 @@ def create_app(config_name='development'):
             print(f"DEBUG: Exception type: {type(e).__name__}")
             import traceback
             traceback.print_exc()
-            return jsonify({'error': str(e), 'success': False}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred', 'success': False}), 500
     
     @app.route('/api/orders', methods=['GET'])
     @token_required
@@ -268,7 +268,7 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/orders/<order_id>', methods=['GET'])
     @token_required
@@ -284,7 +284,7 @@ def create_app(config_name='development'):
             return jsonify(order.to_dict()), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/orders/bulk-actions', methods=['POST'])
     @token_required
@@ -327,7 +327,7 @@ def create_app(config_name='development'):
             return jsonify({'orders': [order.to_dict() for order in orders], 'total': len(orders)}), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/orders/<int:order_id>/notes', methods=['GET', 'POST'])
     @token_required
@@ -353,7 +353,7 @@ def create_app(config_name='development'):
             return jsonify(note.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/orders/<int:order_id>/communications', methods=['GET', 'POST'])
     @token_required
@@ -386,7 +386,7 @@ def create_app(config_name='development'):
             return jsonify(log.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     # ==================== CUSTOMER CRM ROUTES ====================
     @app.route('/api/customers', methods=['GET', 'POST'])
@@ -428,7 +428,7 @@ def create_app(config_name='development'):
             return jsonify(customer.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/customers/<int:customer_id>', methods=['GET', 'PUT'])
     @token_required
@@ -455,7 +455,7 @@ def create_app(config_name='development'):
             return jsonify(customer.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/customers/segments', methods=['GET'])
     @token_required
@@ -469,7 +469,7 @@ def create_app(config_name='development'):
                 summary[c.segment()] = summary.get(c.segment(), 0) + 1
             return jsonify(summary), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/customers/<int:customer_id>/requests', methods=['GET', 'POST'])
     @token_required
@@ -500,7 +500,7 @@ def create_app(config_name='development'):
             return jsonify(req.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/customer-requests/<int:request_id>', methods=['PATCH'])
     @token_required
@@ -521,7 +521,7 @@ def create_app(config_name='development'):
             return jsonify(req.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/customers/<int:customer_id>/feedback', methods=['GET', 'POST'])
     @token_required
@@ -551,7 +551,7 @@ def create_app(config_name='development'):
             return jsonify(fb.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/orders/<int:order_id>/photo', methods=['POST'])
     @token_required
@@ -570,10 +570,23 @@ def create_app(config_name='development'):
             if file.filename == '':
                 return jsonify({'error': 'Empty filename'}), 400
 
+            if not file.filename:
+                return jsonify({'error': 'Invalid filename'}), 400
+            
             filename = secure_filename(file.filename)
+            if not filename:
+                return jsonify({'error': 'Invalid filename'}), 400
+            
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
             final_name = f"order_{order_id}_{timestamp}_{filename}"
             save_path = os.path.join(app.config['UPLOAD_FOLDER'], final_name)
+            
+            # Prevent path traversal: ensure the resolved path is within UPLOAD_FOLDER
+            upload_folder = os.path.abspath(app.config['UPLOAD_FOLDER'])
+            resolved_path = os.path.abspath(save_path)
+            if not resolved_path.startswith(upload_folder):
+                return jsonify({'error': 'Invalid file path'}), 400
+            
             file.save(save_path)
 
             public_url = f"/uploads/{final_name}"
@@ -582,7 +595,8 @@ def create_app(config_name='development'):
             return jsonify({'photo_url': public_url}), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error uploading order photo: {e}")
+            return jsonify({'error': 'Failed to upload photo'}), 500
 
     @app.route('/api/orders/<int:order_id>/shipping-label', methods=['POST', 'PUT'])
     @token_required
@@ -608,7 +622,7 @@ def create_app(config_name='development'):
             return jsonify(order.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== FILAMENT ROUTES ====================
     @app.route('/api/filaments', methods=['GET'])
@@ -625,7 +639,7 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/filaments', methods=['POST'])
     @token_required
@@ -652,7 +666,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/filaments/<filament_id>', methods=['PUT'])
     @token_required
@@ -687,7 +701,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/filaments/<filament_id>', methods=['DELETE'])
     @token_required
@@ -707,7 +721,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== FILAMENT USAGE ROUTES ====================
     @app.route('/api/filament-usage', methods=['POST'])
@@ -763,7 +777,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/filament-usage/order/<order_id>', methods=['GET'])
     @token_required
@@ -784,7 +798,8 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f"Error getting filament usage: {e}")
+            return jsonify({'error': 'Failed to get filament usage'}), 500
     
     # ==================== PRODUCT PROFILE ROUTES ====================
     @app.route('/api/product-profiles', methods=['GET'])
@@ -801,7 +816,7 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/product-profiles', methods=['POST'])
     @token_required
@@ -840,7 +855,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/product-profiles/<profile_id>', methods=['PUT'])
     @token_required
@@ -899,7 +914,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/product-profiles/<profile_id>', methods=['DELETE'])
     @token_required
@@ -919,7 +934,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/orders/<order_id>/auto-assign-filament', methods=['POST'])
     @token_required
@@ -1016,7 +1031,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== PRINTER ROUTES ====================
     @app.route('/api/printers', methods=['GET', 'POST'])
@@ -1048,7 +1063,7 @@ def create_app(config_name='development'):
             return jsonify(printer.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/printers/<int:printer_id>', methods=['GET', 'PUT'])
     @token_required
@@ -1073,7 +1088,7 @@ def create_app(config_name='development'):
             return jsonify(printer.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/printers/<int:printer_id>/assign-orders', methods=['POST'])
     @token_required
@@ -1097,7 +1112,7 @@ def create_app(config_name='development'):
             return jsonify({'assigned_orders': [o.id for o in orders], 'printer': printer.to_dict()}), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/printers/utilization', methods=['GET'])
     @token_required
@@ -1122,7 +1137,7 @@ def create_app(config_name='development'):
                 })
             return jsonify({'utilization': summary}), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     @app.route('/api/printers/maintenance', methods=['GET'])
     @token_required
@@ -1142,7 +1157,7 @@ def create_app(config_name='development'):
                 })
             return jsonify({'maintenance': data}), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
 
     # ==================== ANALYTICS ROUTES ====================
     @app.route('/api/analytics/summary', methods=['GET'])
@@ -1212,7 +1227,7 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/analytics/revenue-trends', methods=['GET'])
     @token_required
@@ -1269,7 +1284,7 @@ def create_app(config_name='development'):
             return jsonify({'period': period, 'trends': trends_list}), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/analytics/product-performance', methods=['GET'])
     @token_required
@@ -1336,7 +1351,7 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== PRODUCTION QUEUE ROUTES ====================
     @app.route('/api/production/queue', methods=['GET'])
@@ -1356,7 +1371,7 @@ def create_app(config_name='development'):
             }), 200
         
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/orders/<int:order_id>/production-status', methods=['PUT'])
     @token_required
@@ -1397,8 +1412,9 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
-    
+            print(f"Error updating shipping label: {e}")
+            return jsonify({'error': 'Failed to update shipping label'}), 500
+
     @app.route('/api/orders/<int:order_id>/priority', methods=['PUT'])
     @token_required
     def update_order_priority(order_id):
@@ -1421,8 +1437,9 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
-    
+            print(f"Error updating order priority: {e}")
+            return jsonify({'error': 'Failed to update priority'}), 500
+
     @app.route('/api/orders/<int:order_id>/print-time', methods=['PUT'])
     @token_required
     def update_print_time(order_id):
@@ -1444,8 +1461,9 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
-    
+            print(f"Error updating print time: {e}")
+            return jsonify({'error': 'Failed to update print time'}), 500
+
     @app.route('/api/print-sessions', methods=['GET', 'POST'])
     @token_required
     def manage_print_sessions():
@@ -1494,7 +1512,7 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/print-sessions/<int:session_id>', methods=['GET', 'PUT', 'DELETE'])
     @token_required
@@ -1554,7 +1572,8 @@ def create_app(config_name='development'):
         
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error managing print session: {e}")
+            return jsonify({'error': 'Failed to manage print session'}), 500
     
     # ==================== ADVANCED FEATURES ====================
     
@@ -1624,7 +1643,8 @@ def create_app(config_name='development'):
             return jsonify(customer_file.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error uploading customer file: {e}")
+            return jsonify({'error': 'Failed to upload file'}), 500
     
     @app.route('/api/files/<int:file_id>', methods=['GET', 'DELETE'])
     @token_required
@@ -1650,7 +1670,8 @@ def create_app(config_name='development'):
                 return jsonify({'message': 'File deleted'}), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error managing file: {e}")
+            return jsonify({'error': 'Failed to manage file'}), 500
     
     # Etsy Message Parsing
     @app.route('/api/etsy/messages', methods=['GET'])
@@ -1715,9 +1736,11 @@ def create_app(config_name='development'):
                 
                 return jsonify({'messages': parsed_messages, 'total': len(parsed_messages)}), 200
             except Exception as e:
-                return jsonify({'error': f'Failed to fetch messages: {str(e)}'}), 500
+                print(f"Error fetching Etsy messages: {e}")
+                return jsonify({'error': 'Failed to fetch messages'}), 500
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f"Error in get_etsy_messages: {e}")
+            return jsonify({'error': 'Failed to retrieve messages'}), 500
     
     @app.route('/api/etsy/messages/<conversation_id>/create-request', methods=['POST'])
     @token_required
@@ -1749,7 +1772,8 @@ def create_app(config_name='development'):
             return jsonify(req.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error creating customer request: {e}")
+            return jsonify({'error': 'Failed to create request'}), 500
     
     # Printer Connection & Monitoring
     @app.route('/api/printer-connections', methods=['GET', 'POST'])
@@ -1787,7 +1811,7 @@ def create_app(config_name='development'):
             return jsonify(connection.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/printer-connections/<int:connection_id>/status', methods=['GET'])
     @token_required
@@ -1859,9 +1883,9 @@ def create_app(config_name='development'):
             except Exception as e:
                 connection.status = 'error'
                 db.session.commit()
-                return jsonify({'error': f'Failed to connect: {str(e)}', 'connection_status': 'error'}), 500
+                print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # Weather & Filament Recommendations
     @app.route('/api/weather/filament-recommendations', methods=['GET'])
@@ -1915,9 +1939,9 @@ def create_app(config_name='development'):
                     'tips': tips
                 }), 200
             except Exception as e:
-                return jsonify({'error': f'Weather API error: {str(e)}'}), 500
+                print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== BAMBU CONNECT - MATERIALS ====================
     @app.route('/api/bambu/materials/<int:printer_id>', methods=['GET'])
@@ -1932,7 +1956,7 @@ def create_app(config_name='development'):
             materials = BambuMaterial.query.filter_by(printer_id=printer_id).all()
             return jsonify([m.to_dict() for m in materials]), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/bambu/materials/<int:printer_id>', methods=['POST'])
     @token_required
@@ -1960,7 +1984,7 @@ def create_app(config_name='development'):
             return jsonify(material.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/bambu/materials/<int:material_id>', methods=['PUT'])
     @token_required
@@ -1988,7 +2012,7 @@ def create_app(config_name='development'):
             return jsonify(material.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== BAMBU CONNECT - NOTIFICATIONS ====================
     @app.route('/api/bambu/notifications/<int:printer_id>', methods=['GET'])
@@ -2017,7 +2041,7 @@ def create_app(config_name='development'):
             return jsonify(notif.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/bambu/notifications/<int:printer_id>', methods=['PUT'])
     @token_required
@@ -2054,7 +2078,7 @@ def create_app(config_name='development'):
             return jsonify(notif.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     # ==================== BAMBU CONNECT - PRINT SCHEDULING ====================
     @app.route('/api/bambu/scheduled-prints/<int:printer_id>', methods=['GET'])
@@ -2081,7 +2105,7 @@ def create_app(config_name='development'):
             
             return jsonify([p.to_dict() for p in prints]), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/bambu/scheduled-prints', methods=['POST'])
     @token_required
@@ -2117,7 +2141,7 @@ def create_app(config_name='development'):
             return jsonify(scheduled_print.to_dict()), 201
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
     
     @app.route('/api/bambu/scheduled-prints/<int:print_id>', methods=['PUT'])
     @token_required
@@ -2153,7 +2177,8 @@ def create_app(config_name='development'):
             return jsonify(scheduled_print.to_dict()), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error updating scheduled print: {e}")
+            return jsonify({'error': 'Failed to update scheduled print'}), 500
     
     @app.route('/api/bambu/scheduled-prints/<int:print_id>', methods=['DELETE'])
     @token_required
@@ -2170,7 +2195,8 @@ def create_app(config_name='development'):
             return jsonify({'message': 'Print job deleted'}), 200
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error deleting scheduled print: {e}")
+            return jsonify({'error': 'Failed to delete print job'}), 500
     
     @app.route('/api/bambu/scheduled-prints/<int:printer_id>/queue', methods=['GET'])
     @token_required
@@ -2191,7 +2217,8 @@ def create_app(config_name='development'):
             
             return jsonify([p.to_dict() for p in queue]), 200
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            print(f"Error getting print queue: {e}")
+            return jsonify({'error': 'Failed to get print queue'}), 500
     
     @app.route('/api/orders/<int:order_id>/schedule-prints', methods=['POST'])
     @token_required
@@ -2229,10 +2256,12 @@ def create_app(config_name='development'):
                 'prints': [p.to_dict() for p in scheduled]
             }), 201
         except ValueError as e:
-            return jsonify({'error': str(e)}), 400
+            print(f"Validation error scheduling prints: {e}")
+            return jsonify({'error': 'Invalid scheduling parameters'}), 400
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 500
+            print(f"Error scheduling prints: {e}")
+            return jsonify({'error': 'Failed to schedule prints'}), 500
     
     # ==================== HEALTH CHECK ====================
     @app.route('/api/health', methods=['GET'])
