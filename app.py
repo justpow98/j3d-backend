@@ -577,17 +577,22 @@ def create_app(config_name='development'):
             if not filename:
                 return jsonify({'error': 'Invalid filename'}), 400
             
+            # Ensure filename is safe and doesn't contain path separators
+            if '/' in filename or '\\' in filename or filename.startswith('.'):
+                return jsonify({'error': 'Invalid filename'}), 400
+            
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
             final_name = f"order_{order_id}_{timestamp}_{filename}"
-            save_path = os.path.join(app.config['UPLOAD_FOLDER'], final_name)
             
-            # Prevent path traversal: ensure the resolved path is within UPLOAD_FOLDER
+            # Build path and validate it stays within upload folder
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], final_name)
             upload_folder = os.path.abspath(app.config['UPLOAD_FOLDER'])
             resolved_path = os.path.abspath(save_path)
-            if not resolved_path.startswith(upload_folder):
+            
+            if not resolved_path.startswith(upload_folder + os.sep):
                 return jsonify({'error': 'Invalid file path'}), 400
             
-            file.save(save_path)
+            file.save(resolved_path)
 
             public_url = f"/uploads/{final_name}"
             order.photo_url = public_url
