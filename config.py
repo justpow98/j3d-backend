@@ -25,6 +25,9 @@ class Config:
     # CORS Configuration
     CORS_ORIGINS = ['http://localhost:4200', 'http://localhost:3000']
     
+    # HTTP client configuration
+    HTTP_TIMEOUT = float(os.getenv('HTTP_TIMEOUT', '10'))
+    
     # JWT Configuration
     JWT_EXPIRATION_HOURS = 24
 

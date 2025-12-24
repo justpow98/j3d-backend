@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, session, send_from_directory
+from flask import Flask, jsonify, request, session, send_from_directory, abort
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_migrate import Migrate, upgrade
@@ -1637,7 +1637,10 @@ def create_app(config_name='development'):
                 return jsonify({'error': 'File not found'}), 404
             
             if request.method == 'GET':
-                return send_from_directory(app.config['UPLOAD_FOLDER'], file.filename, as_attachment=True, download_name=file.original_filename)
+                safe_name = secure_filename(file.filename)
+                if not safe_name or safe_name != file.filename:
+                    return jsonify({'error': 'Invalid file reference'}), 400
+                return send_from_directory(app.config['UPLOAD_FOLDER'], safe_name, as_attachment=True, download_name=file.original_filename)
             
             if request.method == 'DELETE':
                 if os.path.exists(file.file_path):
@@ -1678,7 +1681,8 @@ def create_app(config_name='development'):
                 response = requests.get(
                     f'https://api.etsy.com/v3/application/shops/{current_user.shop_id}/conversations',
                     headers=headers,
-                    params={'limit': 25}
+                    params={'limit': 25},
+                    timeout=app.config.get('HTTP_TIMEOUT', 10)
                 )
                 response.raise_for_status()
                 conversations = response.json().get('results', [])
@@ -2239,7 +2243,13 @@ def create_app(config_name='development'):
     # Error handlers
     @app.route('/uploads/<path:filename>')
     def serve_upload(filename):
-        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+        safe_name = secure_filename(filename)
+        if not safe_name:
+            abort(404)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
+        if not os.path.exists(file_path):
+            abort(404)
+        return send_from_directory(app.config['UPLOAD_FOLDER'], safe_name)
 
     @app.errorhandler(404)
     def not_found(error):

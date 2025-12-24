@@ -18,6 +18,7 @@ class EtsyAPI:
         """Make a request to Etsy API"""
         url = f"{self.base_url}{endpoint}"
         kwargs['headers'] = self.headers
+        kwargs.setdefault('timeout', current_app.config.get('HTTP_TIMEOUT', 10))
         
         try:
             response = requests.request(method, url, **kwargs)

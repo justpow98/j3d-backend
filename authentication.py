@@ -66,7 +66,11 @@ class EtsyOAuth:
         try:
             print(f"DEBUG: Posting to Etsy token URL: {EtsyOAuth.ETSY_TOKEN_URL}")
             print(f"DEBUG: Request data: {data}")
-            response = requests.post(EtsyOAuth.ETSY_TOKEN_URL, data=data)
+            response = requests.post(
+                EtsyOAuth.ETSY_TOKEN_URL,
+                data=data,
+                timeout=current_app.config.get('HTTP_TIMEOUT', 10)
+            )
             print(f"DEBUG: Etsy response status: {response.status_code}")
             print(f"DEBUG: Etsy response headers: {response.headers}")
             print(f"DEBUG: Etsy response body: {response.text}")
@@ -87,7 +91,11 @@ class EtsyOAuth:
         try:
             print(f"DEBUG: Getting user info from {EtsyOAuth.ETSY_USER_URL}")
             print(f"DEBUG: Headers: {headers}")
-            response = requests.get(EtsyOAuth.ETSY_USER_URL, headers=headers)
+            response = requests.get(
+                EtsyOAuth.ETSY_USER_URL,
+                headers=headers,
+                timeout=current_app.config.get('HTTP_TIMEOUT', 10)
+            )
             print(f"DEBUG: User info response status: {response.status_code}")
             print(f"DEBUG: User info response headers: {response.headers}")
             print(f"DEBUG: User info response body: {response.text}")
@@ -107,7 +115,11 @@ class EtsyOAuth:
         
         try:
             url = EtsyOAuth.ETSY_SHOP_URL.format(shop_id=shop_id)
-            response = requests.get(url, headers=headers)
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=current_app.config.get('HTTP_TIMEOUT', 10)
+            )
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -125,7 +137,11 @@ class EtsyOAuth:
         }
         
         try:
-            response = requests.post(EtsyOAuth.ETSY_TOKEN_URL, data=data)
+            response = requests.post(
+                EtsyOAuth.ETSY_TOKEN_URL,
+                data=data,
+                timeout=current_app.config.get('HTTP_TIMEOUT', 10)
+            )
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
