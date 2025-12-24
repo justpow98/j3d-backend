@@ -16,6 +16,7 @@ class EtsyOAuth:
     ETSY_AUTH_URL = 'https://www.etsy.com/oauth/connect'
     ETSY_TOKEN_URL = 'https://api.etsy.com/v3/public/oauth/token'
     ETSY_USER_URL = 'https://api.etsy.com/v3/application/users/me'
+    ETSY_SHOP_URL = 'https://api.etsy.com/v3/application/shops/{shop_id}'
     
     @staticmethod
     def get_authorization_url():
@@ -95,6 +96,23 @@ class EtsyOAuth:
         except requests.exceptions.RequestException as e:
             print(f"DEBUG: User info request exception: {str(e)}")
             raise Exception(f"Failed to get user info: {str(e)}")
+    
+    @staticmethod
+    def get_shop_info(access_token, shop_id):
+        """Get shop details including shop name"""
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'x-api-key': current_app.config['ETSY_CLIENT_ID']
+        }
+        
+        try:
+            url = EtsyOAuth.ETSY_SHOP_URL.format(shop_id=shop_id)
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"DEBUG: Shop info request exception: {str(e)}")
+            return None
     
     @staticmethod
     def refresh_access_token(refresh_token):

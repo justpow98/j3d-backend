@@ -1,7 +1,7 @@
 import requests
 from datetime import datetime, timedelta, timezone
 from flask import current_app
-from models import db, Order, OrderItem
+from models import db, Order, OrderItem, Customer, ScheduledPrint, ProductProfile
 
 class EtsyAPI:
     """Interact with Etsy API v3"""
@@ -104,6 +104,42 @@ class OrderSyncManager:
             # Save to database
             saved_count = 0
             updated_count = 0
+
+            def upsert_customer(receipt_data, add_order=True):
+                email = (receipt_data.get('buyer_email') or '').strip().lower()
+                name = receipt_data.get('name') or receipt_data.get('first_line') or ''
+                if not email and not name:
+                    return None
+
+                customer = None
+                if email:
+                    customer = Customer.query.filter_by(user_id=user.id, email=email).first()
+                if not customer and name:
+                    customer = Customer.query.filter_by(user_id=user.id, name=name).first()
+
+                order_created_at = datetime.fromtimestamp(receipt_data.get('create_timestamp', 0), tz=timezone.utc)
+                order_value = float(receipt_data.get('grandtotal', {}).get('amount', 0)) / 100
+
+                if not customer:
+                    customer = Customer(
+                        user_id=user.id,
+                        email=email or None,
+                        name=name or None,
+                        first_order_at=order_created_at if add_order else None,
+                        last_order_at=order_created_at if add_order else None,
+                        order_count=1 if add_order else 0,
+                        total_spend=order_value if add_order else 0
+                    )
+                    db.session.add(customer)
+                elif add_order:
+                    customer.order_count = (customer.order_count or 0) + 1
+                    customer.total_spend = (customer.total_spend or 0) + order_value
+                    if not customer.first_order_at or order_created_at < customer.first_order_at:
+                        customer.first_order_at = order_created_at
+                    if not customer.last_order_at or order_created_at > customer.last_order_at:
+                        customer.last_order_at = order_created_at
+
+                return customer
             
             for receipt_data in all_receipts:
                 # Check if order already exists
@@ -112,10 +148,32 @@ class OrderSyncManager:
                     etsy_order_id=receipt_id
                 ).first()
                 
-                # Determine status
-                status = 'PAID'
-                if receipt_data.get('was_shipped'):
+                # Debug: Log receipt status fields
+                print(f"DEBUG: Receipt {receipt_id} - status: {receipt_data.get('status')}, is_shipped: {receipt_data.get('is_shipped')}")
+                
+                # Determine status based on Etsy receipt status field
+                # Etsy API v3 status values: "Open", "Paid", "Completed", "Canceled"
+                etsy_status = receipt_data.get('status', 'Paid')
+                
+                # Map Etsy status to our status
+                status_mapping = {
+                    'Open': 'PENDING',
+                    'Paid': 'PAID',
+                    'Completed': 'COMPLETED',
+                    'Canceled': 'CANCELED',
+                    'Cancelled': 'CANCELED'
+                }
+                
+                status = status_mapping.get(etsy_status, 'PAID')
+                
+                # Override with more specific status if available
+                if receipt_data.get('has_refunds', False):
+                    status = 'REFUNDED'
+                elif receipt_data.get('is_shipped', False) and status == 'PAID':
+                    # If marked as shipped but Etsy status is still "Paid", use SHIPPED
                     status = 'SHIPPED'
+                
+                print(f"DEBUG: Receipt {receipt_id} - Etsy status: {etsy_status}, Final status: {status}")
                 
                 if existing_order:
                     # Update existing order
@@ -123,11 +181,17 @@ class OrderSyncManager:
                     existing_order.updated_at = datetime.fromtimestamp(receipt_data.get('update_timestamp', 0), tz=timezone.utc)
                     if receipt_data.get('shipped_timestamp'):
                         existing_order.shipped_at = datetime.fromtimestamp(receipt_data['shipped_timestamp'], tz=timezone.utc)
+                    if not existing_order.customer_id:
+                        customer = upsert_customer(receipt_data, add_order=False)
+                        if customer:
+                            existing_order.customer_id = customer.id
                     updated_count += 1
                 else:
                     # Create new order
+                    customer = upsert_customer(receipt_data, add_order=True)
                     order = Order(
                         user_id=user.id,
+                        customer_id=customer.id if customer else None,
                         etsy_order_id=receipt_id,
                         etsy_shop_id=str(shop_id),
                         buyer_email=receipt_data.get('buyer_email', ''),
@@ -181,3 +245,65 @@ class OrderSyncManager:
                 'error': str(e),
                 'message': 'Failed to sync orders'
             }
+
+
+def schedule_order_prints(user_id, order_id, printer_id, material_type=None, start_offset_minutes=0):
+    """
+    Automatically create scheduled print jobs for order items
+    
+    Args:
+        user_id: User ID
+        order_id: Order ID to schedule
+        printer_id: Target printer
+        material_type: Optional material type override
+        start_offset_minutes: Delay before first print starts (default 0)
+    
+    Returns:
+        List of created ScheduledPrint objects
+    """
+    from models import Printer
+    
+    order = Order.query.get(order_id)
+    if not order:
+        raise ValueError(f"Order {order_id} not found")
+    
+    printer = Printer.query.get(printer_id)
+    if not printer or printer.user_id != user_id:
+        raise ValueError(f"Printer {printer_id} not found or unauthorized")
+    
+    scheduled_prints = []
+    current_start_time = datetime.utcnow() + timedelta(minutes=start_offset_minutes)
+    
+    for idx, item in enumerate(order.items):
+        # Try to find product profile for print settings
+        product = ProductProfile.query.filter_by(
+            user_id=user_id,
+            product_name=item.title
+        ).first()
+        
+        scheduled_print = ScheduledPrint(
+            user_id=user_id,
+            printer_id=printer_id,
+            order_id=order_id,
+            job_name=f"{order.order_number} - {item.title}",
+            file_name=f"{item.title.replace(' ', '_')}.stl",
+            status='queued',
+            scheduled_start=current_start_time if idx == 0 else None,
+            estimated_duration_minutes=product.print_time_minutes if product else 120,
+            material_type=material_type or (product.preferred_material if product else 'PLA'),
+            nozzle_temp=product.nozzle_temp_c if product else 200,
+            bed_temp=product.bed_temp_c if product else 60,
+            print_speed=product.print_speed_mms if product else 50,
+            priority=10 - idx,  # Higher priority for earlier items
+            notes=f"Quantity: {item.quantity}"
+        )
+        db.session.add(scheduled_print)
+        scheduled_prints.append(scheduled_print)
+        
+        # Offset subsequent prints by estimated duration + buffer
+        current_start_time += timedelta(
+            minutes=(product.print_time_minutes if product else 120) + 15
+        )
+    
+    db.session.commit()
+    return scheduled_prints

@@ -1,0 +1,64 @@
+version: '3.8'
+
+# J3D - Etsy Orders & Filament Tracker
+# Version: 2.0.0
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: j3d-postgres
+    environment:
+      POSTGRES_DB: j3d
+      POSTGRES_USER: j3d_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U j3d_user -d j3d"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: j3d-backend
+    environment:
+      # Database
+      DATABASE_URL: postgresql://j3d_user:${POSTGRES_PASSWORD:-changeme}@postgres:5432/j3d
+      
+      # Flask config
+      FLASK_CONFIG: production
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      
+      # Etsy OAuth
+      ETSY_CLIENT_ID: ${ETSY_CLIENT_ID}
+      ETSY_CLIENT_SECRET: ${ETSY_CLIENT_SECRET}
+      ETSY_REDIRECT_URI: ${ETSY_REDIRECT_URI:-http://localhost:4200/oauth-callback}
+      
+      # Auto-migration on startup
+      AUTO_MIGRATE: "1"
+      
+      # CORS origins (adjust for your frontend URL)
+      # CORS_ORIGINS: "http://localhost:4200,https://your-frontend-domain.com"
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backend_data:/app/data
+      - backend_instance:/app/instance
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  backend_data:
+    driver: local
+  backend_instance:
+    driver: local
