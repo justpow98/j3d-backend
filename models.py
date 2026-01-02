@@ -715,3 +715,29 @@ class ScheduledPrint(db.Model):
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat()
         }
+
+
+class AlertSettings(db.Model):
+    """Global alert destinations per user (Slack/Discord/email)."""
+    __tablename__ = 'alert_settings'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    slack_webhook_url = db.Column(db.String(500))
+    discord_webhook_url = db.Column(db.String(500))
+    email_enabled = db.Column(db.Boolean, default=False)
+    email_to = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'slack_webhook_url': self.slack_webhook_url,
+            'discord_webhook_url': self.discord_webhook_url,
+            'email_enabled': self.email_enabled,
+            'email_to': self.email_to,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }

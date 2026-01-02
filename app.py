@@ -1,14 +1,22 @@
 import os
+import requests
+import smtplib
+import logging
+from email.message import EmailMessage
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, session, send_from_directory, abort
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_migrate import Migrate, upgrade
 from config import config
-from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint
+from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint, AlertSettings
 from authentication import EtsyOAuth, TokenManager, token_required
 from etsy_api import EtsyAPI, OrderSyncManager, schedule_order_prints
 from datetime import datetime, timedelta, timezone
+
+# Configure secure logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -34,7 +42,10 @@ def create_app(config_name='development'):
     migrate.init_app(app, db)
     CORS(
         app,
-        resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}},
+        resources={r"/api/*": {
+            "origins": app.config['CORS_ORIGINS'],
+            "allow_private_network": False  # CVE-2024-6221 mitigation
+        }},
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
     )
@@ -44,9 +55,9 @@ def create_app(config_name='development'):
         if os.getenv('RUN_DB_UPGRADE') == '1':
             try:
                 upgrade()
-                print("INFO: Applied migrations via RUN_DB_UPGRADE=1")
+                logger.info("Applied migrations via RUN_DB_UPGRADE=1")
             except Exception as e:
-                print(f"WARN: Migration upgrade failed: {e}")
+                logger.warning(f"Migration upgrade failed: {type(e).__name__}")
         elif app.config.get('AUTO_DB_CREATE') or os.getenv('AUTO_DB_CREATE') == '1':
             db.create_all()
     
@@ -59,7 +70,8 @@ def create_app(config_name='development'):
             url, state, code_verifier = EtsyOAuth.get_authorization_url()
             return jsonify({'auth_url': url, 'code_verifier': code_verifier}), 200
         except Exception as e:
-            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
+            logger.exception("Exception in get_login_url")
+            return jsonify({'error': 'Failed to generate login URL'}), 500
     
     @app.route('/api/auth/callback', methods=['POST'])
     def oauth_callback():
@@ -71,10 +83,10 @@ def create_app(config_name='development'):
             if not code_verifier:
                 return jsonify({'error': 'Missing code_verifier'}), 400
             
-            print(f"DEBUG: code_verifier from request: {code_verifier}")
+            logger.info("Processing authorization code with PKCE")
             
             # Exchange code for token
-            print(f"DEBUG: Exchanging code for token with PKCE verifier")
+            logger.info("Exchanging code for token")
             token_data = EtsyOAuth.exchange_code_for_token(code, code_verifier)
             access_token = token_data['access_token']
             refresh_token = token_data.get('refresh_token')
@@ -136,10 +148,8 @@ def create_app(config_name='development'):
             }), 200
             
         except Exception as e:
-            print(f"DEBUG: Exception occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
+            logger.exception("Exception in oauth_callback")
+            return jsonify({'error': 'Authentication failed'}), 500
     
     @app.route('/api/auth/logout', methods=['POST'])
     @token_required
@@ -160,13 +170,11 @@ def create_app(config_name='development'):
     def sync_orders():
         """Sync orders from Etsy"""
         try:
-            print("DEBUG: sync_orders called")
+            logger.info("sync_orders endpoint called")
             
             # Check if token needs refresh
             user = request.user
-            print(f"DEBUG: User from token_required: {user}")
-            print(f"DEBUG: User ID: {user.etsy_user_id}")
-            print(f"DEBUG: User shop_id: {user.shop_id}")
+            logger.info(f"Processing sync for user: {user.etsy_user_id}")
             
             # Make token_expires_at timezone-aware if it isn't
             if user.token_expires_at:
@@ -177,40 +185,38 @@ def create_app(config_name='development'):
                     token_expires_at = user.token_expires_at
                 
                 if token_expires_at <= datetime.now(timezone.utc):
-                    print("DEBUG: Token expired, refreshing...")
+                    logger.info("Token expired, refreshing")
                     # Refresh token
                     token_data = EtsyOAuth.refresh_access_token(user.refresh_token)
                     user.access_token = token_data['access_token']
                     user.refresh_token = token_data.get('refresh_token', user.refresh_token)
                     user.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get('expires_in', 3600))
                     db.session.commit()
-                    print("DEBUG: Token refreshed successfully")
+                    logger.info("Token refreshed successfully")
             
             # Check if user has a shop_id
             if not user.shop_id:
-                print("DEBUG: No shop_id found for user")
+                logger.warning("No shop_id found for user")
                 return jsonify({'error': 'No shop associated with this account'}), 404
             
-            print("DEBUG: Initializing Etsy API")
+            logger.info("Initializing Etsy API")
             # Initialize Etsy API
             etsy_api = EtsyAPI(user.access_token)
             
             shop_id = user.shop_id
-            print(f"DEBUG: Using shop_id: {shop_id}")
+            logger.info(f"Starting order sync for shop_id: {shop_id}")
             
-            print("DEBUG: Starting order sync")
             # Sync orders
             result = OrderSyncManager.sync_orders_from_etsy(user, shop_id, etsy_api, months=6)
-            print(f"DEBUG: Sync result: {result}")
+            logger.info(f"Sync result: {result.get('message', 'Completed')}")
             
             return jsonify(result), 200 if result['success'] else 500
         
         except Exception as e:
-            print(f"DEBUG: Exception in sync_orders: {str(e)}")
-            print(f"DEBUG: Exception type: {type(e).__name__}")
-            import traceback
-            traceback.print_exc()
-            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred', 'success': False}), 500
+            # Log detailed error information securely on the server
+            logger.exception("Exception in sync_orders")
+            # Return generic error to client without exposing implementation details
+            return jsonify({'error': 'An error occurred during order synchronization', 'success': False}), 500
     
     @app.route('/api/orders', methods=['GET'])
     @token_required
@@ -2293,8 +2299,182 @@ def create_app(config_name='development'):
     def internal_error(error):
         return jsonify({'error': 'Internal server error'}), 500
     
+    # ==================== ALERTS: SETTINGS, PREVIEW, TRIGGER ====================
+    @app.route('/api/alerts/settings', methods=['GET', 'PUT'])
+    @token_required
+    def alert_settings():
+        """Get or update alert destinations (Slack/Discord/email)."""
+        try:
+            current_user = request.user
+            settings = AlertSettings.query.filter_by(user_id=current_user.id).first()
+            if request.method == 'GET':
+                if not settings:
+                    settings = AlertSettings(user_id=current_user.id)
+                    db.session.add(settings)
+                    db.session.commit()
+                return jsonify(settings.to_dict()), 200
+
+            # PUT
+            data = request.get_json() or {}
+            if not settings:
+                settings = AlertSettings(user_id=current_user.id)
+                db.session.add(settings)
+            for field in ['slack_webhook_url', 'discord_webhook_url', 'email_enabled', 'email_to']:
+                if field in data:
+                    setattr(settings, field, data[field])
+            settings.updated_at = datetime.utcnow()
+            db.session.commit()
+            return jsonify(settings.to_dict()), 200
+        except Exception as e:
+            db.session.rollback()
+            print(f'Exception: {e}'); return jsonify({'error': 'Failed to update alert settings'}), 500
+
+    @app.route('/api/alerts/preview', methods=['GET'])
+    @token_required
+    def alert_preview():
+        """Return current low-stock filaments and printer issues for the user."""
+        try:
+            current_user = request.user
+            filaments = Filament.query.filter_by(user_id=current_user.id).all()
+            low_stock = [f.to_dict() for f in filaments if (f.current_amount or 0) <= (f.low_stock_threshold or 0)]
+
+            printers = Printer.query.filter_by(user_id=current_user.id).all()
+            issues = []
+            for p in printers:
+                status = (p.status or '').lower()
+                if any(x in status for x in ['error', 'fail', 'fault', 'offline', 'disconnected']):
+                    issues.append(p.to_dict())
+
+            return jsonify({'low_stock': low_stock, 'printer_issues': issues}), 200
+        except Exception as e:
+            logger.exception("Exception in preview_alerts")
+            return jsonify({'error': 'Failed to preview alerts'}), 500
+
+    def _send_webhook(url: str | None, text: str) -> bool:
+        if not url:
+            return False
+        
+        # Validate URL and detect webhook format
+        try:
+            parsed = urlparse(url)
+            # Ensure URL has proper scheme
+            if parsed.scheme not in ('http', 'https'):
+                logger.warning(f"Invalid webhook URL scheme: {parsed.scheme}")
+                return False
+            
+            # Validate webhook provider by hostname
+            hostname = parsed.hostname
+            if not hostname:
+                logger.warning("Webhook URL has no hostname")
+                return False
+            
+            payload = {}
+            # Slack webhook validation
+            if hostname == 'hooks.slack.com' or hostname.endswith('.slack.com'):
+                if not parsed.path.startswith('/services/'):
+                    logger.warning(f"Invalid Slack webhook path: {parsed.path}")
+                    return False
+                payload = {'text': text}
+            # Discord webhook validation
+            elif hostname == 'discord.com' or hostname.endswith('.discord.com'):
+                if not parsed.path.startswith('/api/webhooks/'):
+                    logger.warning(f"Invalid Discord webhook path: {parsed.path}")
+                    return False
+                payload = {'content': text}
+            else:
+                # Generic webhook format for other providers
+                payload = {'message': text}
+            
+            resp = requests.post(url, json=payload, timeout=app.config.get('HTTP_TIMEOUT', 10))
+            return resp.status_code in (200, 204)
+        except Exception as e:
+            logger.error(f"Webhook send failed: {type(e).__name__}")
+            return False
+
+    def _send_email(to_addr: str | None, subject: str, body: str) -> bool:
+        if not to_addr:
+            return False
+        host = os.getenv('SMTP_HOST')
+        port = int(os.getenv('SMTP_PORT', '587'))
+        user = os.getenv('SMTP_USER')
+        password = os.getenv('SMTP_PASS')
+        from_addr = os.getenv('EMAIL_FROM', user or 'alerts@j3d.local')
+        try:
+            msg = EmailMessage()
+            msg['Subject'] = subject
+            msg['From'] = from_addr
+            msg['To'] = to_addr
+            msg.set_content(body)
+
+            with smtplib.SMTP(host, port, timeout=10) as smtp:
+                smtp.starttls()
+                if user and password:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+            return True
+        except Exception as e:
+            print(f"Email send failed: {e}")
+            return False
+
+    @app.route('/api/alerts/trigger', methods=['POST'])
+    @token_required
+    def trigger_alerts():
+        """Trigger alerts for current low stock and printer issues via configured channels."""
+        try:
+            current_user = request.user
+            settings = AlertSettings.query.filter_by(user_id=current_user.id).first()
+            if not settings:
+                settings = AlertSettings(user_id=current_user.id)
+                db.session.add(settings)
+                db.session.commit()
+
+            # Gather data
+            filaments = Filament.query.filter_by(user_id=current_user.id).all()
+            low_stock_filaments = [f for f in filaments if (f.current_amount or 0) <= (f.low_stock_threshold or 0)]
+            printers = Printer.query.filter_by(user_id=current_user.id).all()
+            issue_printers = [p for p in printers if any(x in (p.status or '').lower() for x in ['error', 'fail', 'fault', 'offline', 'disconnected'])]
+
+            if not low_stock_filaments and not issue_printers:
+                return jsonify({'sent': False, 'message': 'No alerts to send'}), 200
+
+            # Compose message
+            lines = [f"Shop: {current_user.username or 'Your shop'}"]
+            if low_stock_filaments:
+                lines.append("\nLow-stock filaments:")
+                for f in low_stock_filaments[:10]:
+                    lines.append(f"- {f.material} {f.color}: {f.current_amount}{f.unit} (threshold {f.low_stock_threshold}{f.unit})")
+                if len(low_stock_filaments) > 10:
+                    lines.append(f"+{len(low_stock_filaments) - 10} more...")
+            if issue_printers:
+                lines.append("\nPrinter issues:")
+                for p in issue_printers[:10]:
+                    lines.append(f"- {p.name}: {p.status}")
+                if len(issue_printers) > 10:
+                    lines.append(f"+{len(issue_printers) - 10} more...")
+            message = "\n".join(lines)
+
+            # Dispatch
+            sent_channels = []
+            if _send_webhook(settings.slack_webhook_url, message):
+                sent_channels.append('slack')
+            if _send_webhook(settings.discord_webhook_url, message):
+                sent_channels.append('discord')
+            if settings.email_enabled and _send_email(settings.email_to, 'J3D Alerts', message):
+                sent_channels.append('email')
+
+            return jsonify({
+                'sent': len(sent_channels) > 0,
+                'channels': sent_channels,
+                'low_stock_count': len(low_stock_filaments),
+                'printer_issue_count': len(issue_printers)
+            }), 200
+        except Exception as e:
+            print(f'Exception: {e}'); return jsonify({'error': 'Failed to trigger alerts'}), 500
+
     return app
 
 if __name__ == "__main__":
     app = create_app(os.getenv('FLASK_ENV', 'development'))
-    app.run(debug=True, port=5000)
+    # Debug mode controlled by environment configuration, never hardcoded
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(debug=debug_mode, port=5000)

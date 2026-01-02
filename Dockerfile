@@ -1,5 +1,5 @@
 # Multi-stage build for Python backend
-# Version: 2.0.0
+ARG VERSION
 FROM python:3.11-slim as builder
 
 # Set working directory
@@ -48,6 +48,11 @@ ENV PATH=/home/appuser/.local/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     FLASK_CONFIG=production \
     AUTO_MIGRATE=1
+
+# Add labels for container metadata
+LABEL version="${VERSION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.title="J3D Backend"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

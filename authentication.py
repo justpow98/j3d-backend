@@ -59,25 +59,24 @@ class EtsyOAuth:
         # Add code_verifier for PKCE
         if code_verifier:
             data['code_verifier'] = code_verifier
-            print(f"DEBUG: Using PKCE code_verifier")
+            logger.info("Using PKCE code_verifier")
         else:
-            print(f"DEBUG: No PKCE code_verifier provided")
+            logger.info("No PKCE code_verifier provided")
         
         try:
-            print(f"DEBUG: Posting to Etsy token URL: {EtsyOAuth.ETSY_TOKEN_URL}")
-            print(f"DEBUG: Request data: {data}")
+            logger.info(f"Posting to Etsy token URL: {EtsyOAuth.ETSY_TOKEN_URL}")
+            # NOTE: Never log request data as it contains sensitive credentials
             response = requests.post(
                 EtsyOAuth.ETSY_TOKEN_URL,
                 data=data,
                 timeout=current_app.config.get('HTTP_TIMEOUT', 10)
             )
-            print(f"DEBUG: Etsy response status: {response.status_code}")
-            print(f"DEBUG: Etsy response headers: {response.headers}")
-            print(f"DEBUG: Etsy response body: {response.text}")
+            logger.info(f"Etsy response status: {response.status_code}")
+            # NOTE: Never log response body or headers as they may contain tokens
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"DEBUG: Request exception: {str(e)}")
+            logger.error(f"Request exception during token exchange: {type(e).__name__}")
             raise Exception(f"Failed to exchange code for token: {str(e)}")
     
     @staticmethod
@@ -89,21 +88,20 @@ class EtsyOAuth:
         }
         
         try:
-            print(f"DEBUG: Getting user info from {EtsyOAuth.ETSY_USER_URL}")
-            print(f"DEBUG: Headers: {headers}")
+            logger.info(f"Getting user info from {EtsyOAuth.ETSY_USER_URL}")
+            # NOTE: Never log headers as they contain bearer tokens
             response = requests.get(
                 EtsyOAuth.ETSY_USER_URL,
                 headers=headers,
                 timeout=current_app.config.get('HTTP_TIMEOUT', 10)
             )
-            print(f"DEBUG: User info response status: {response.status_code}")
-            print(f"DEBUG: User info response headers: {response.headers}")
-            print(f"DEBUG: User info response body: {response.text}")
+            logger.info(f"User info response status: {response.status_code}")
+            # NOTE: Never log response body as it may contain sensitive user data
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"DEBUG: User info request exception: {str(e)}")
-            raise Exception(f"Failed to get user info: {str(e)}")
+            logger.error(f"User info request failed: {type(e).__name__}")
+            raise Exception(f"Failed to get user info: {type(e).__name__}")
     
     @staticmethod
     def get_shop_info(access_token, shop_id):
@@ -123,7 +121,7 @@ class EtsyOAuth:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"DEBUG: Shop info request exception: {str(e)}")
+            logger.error(f"Shop info request failed: {type(e).__name__}")
             return None
     
     @staticmethod
@@ -196,20 +194,18 @@ def token_required(f):
             try:
                 token = auth_header.split(" ")[1]
             except IndexError:
-                print("DEBUG: Invalid token format in Authorization header")
+                logger.warning("Invalid token format in Authorization header")
                 return jsonify({'message': 'Invalid token format'}), 401
         
         if not token:
-            print("DEBUG: No token provided")
+            logger.warning("No token provided in request")
             return jsonify({'message': 'Token is missing'}), 401
         
-        print(f"DEBUG: Verifying token...")
+        logger.debug("Verifying token")
         payload = TokenManager.verify_token(token)
         if not payload:
-            print("DEBUG: Token verification failed")
+            logger.warning("Token verification failed")
             return jsonify({'message': 'Invalid or expired token'}), 401
-        
-        print(f"DEBUG: Token payload: {payload}")
         
         # Get user from database
         # Check if payload contains 'id' (primary key) or 'etsy_user_id'
@@ -222,14 +218,14 @@ def token_required(f):
             # If payload contains Etsy user ID
             user = User.query.filter_by(etsy_user_id=str(payload['etsy_user_id'])).first()
         else:
-            print(f"DEBUG: No valid user identifier in payload")
+            logger.warning("No valid user identifier in token payload")
             return jsonify({'message': 'Invalid token payload'}), 401
         
         if not user:
-            print(f"DEBUG: User not found for payload: {payload}")
+            logger.warning("User not found for token")
             return jsonify({'message': 'User not found'}), 404
         
-        print(f"DEBUG: User found: {user.etsy_user_id}")
+        logger.debug(f"User authenticated: {user.etsy_user_id}")
         request.user = user
         return f(*args, **kwargs)
     
