@@ -3,6 +3,7 @@ import requests
 import smtplib
 import logging
 from email.message import EmailMessage
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, session, send_from_directory, abort
 from werkzeug.utils import secure_filename
@@ -2346,24 +2347,48 @@ def create_app(config_name='development'):
 
             return jsonify({'low_stock': low_stock, 'printer_issues': issues}), 200
         except Exception as e:
-            print(f'Exception: {e}'); return jsonify({'error': 'Failed to preview alerts'}), 500
+            logger.exception("Exception in preview_alerts")
+            return jsonify({'error': 'Failed to preview alerts'}), 500
 
     def _send_webhook(url: str | None, text: str) -> bool:
         if not url:
             return False
-        payload = {}
-        # Basic auto-detection of webhook format
-        if 'hooks.slack.com' in url:
-            payload = {'text': text}
-        elif 'discord.com/api/webhooks' in url:
-            payload = {'content': text}
-        else:
-            payload = {'message': text}
+        
+        # Validate URL and detect webhook format
         try:
+            parsed = urlparse(url)
+            # Ensure URL has proper scheme
+            if parsed.scheme not in ('http', 'https'):
+                logger.warning(f"Invalid webhook URL scheme: {parsed.scheme}")
+                return False
+            
+            # Validate webhook provider by hostname
+            hostname = parsed.hostname
+            if not hostname:
+                logger.warning("Webhook URL has no hostname")
+                return False
+            
+            payload = {}
+            # Slack webhook validation
+            if hostname == 'hooks.slack.com' or hostname.endswith('.slack.com'):
+                if not parsed.path.startswith('/services/'):
+                    logger.warning(f"Invalid Slack webhook path: {parsed.path}")
+                    return False
+                payload = {'text': text}
+            # Discord webhook validation
+            elif hostname == 'discord.com' or hostname.endswith('.discord.com'):
+                if not parsed.path.startswith('/api/webhooks/'):
+                    logger.warning(f"Invalid Discord webhook path: {parsed.path}")
+                    return False
+                payload = {'content': text}
+            else:
+                # Generic webhook format for other providers
+                payload = {'message': text}
+            
             resp = requests.post(url, json=payload, timeout=app.config.get('HTTP_TIMEOUT', 10))
             return resp.status_code in (200, 204)
         except Exception as e:
-            print(f"Webhook send failed: {e}")
+            logger.error(f"Webhook send failed: {type(e).__name__}")
             return False
 
     def _send_email(to_addr: str | None, subject: str, body: str) -> bool:

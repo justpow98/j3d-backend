@@ -4,7 +4,7 @@ This document outlines the security vulnerabilities addressed in this release.
 
 ## Summary
 
-Five Flask-CORS vulnerabilities and three CodeQL-detected security issues have been resolved.
+Five Flask-CORS vulnerabilities and four CodeQL-detected security issues have been resolved.
 
 ---
 
@@ -118,6 +118,40 @@ Five Flask-CORS vulnerabilities and three CodeQL-detected security issues have b
   - `app.py`
   - `authentication.py`
 
+### 4. **Incomplete URL Substring Sanitization (HIGH)**
+- **Status**: ✅ FIXED
+- **Details**: Webhook URL validation was using unsafe substring checks:
+  - `if 'hooks.slack.com' in url:` - Could match malicious URLs like `https://evil.com?redirect=hooks.slack.com`
+  - `if 'discord.com/api/webhooks' in url:` - Similar vulnerability
+  - No scheme validation (could be `javascript:`, `file:`, etc.)
+  - No hostname validation (could be `hooks.slack.com.evil.com`)
+  
+- **Fix Applied**:
+  - Implemented proper URL parsing using `urllib.parse.urlparse()`
+  - Validate URL scheme (only `http` and `https` allowed)
+  - Validate exact hostname matching (no substring attacks)
+  - Validate webhook-specific path patterns
+  - Added comprehensive logging for security events
+  
+  ```python
+  # Before (UNSAFE):
+  if 'hooks.slack.com' in url:
+      payload = {'text': text}
+  
+  # After (SECURE):
+  parsed = urlparse(url)
+  if parsed.scheme not in ('http', 'https'):
+      return False
+  hostname = parsed.hostname
+  if hostname == 'hooks.slack.com' or hostname.endswith('.slack.com'):
+      if not parsed.path.startswith('/services/'):
+          return False
+      payload = {'text': text}
+  ```
+
+- **Files Modified**: 
+  - `app.py`
+
 ---
 
 ## Configuration Changes
@@ -197,6 +231,11 @@ After applying these fixes, verify:
    - Test CORS headers in responses
    - Verify `Access-Control-Allow-Private-Network` is not set or is `false`
 
+5. **Webhook URL Validation**:
+   - Test webhook URLs are properly validated
+   - Verify malicious URLs like `https://evil.com?q=hooks.slack.com` are rejected
+   - Ensure only `http` and `https` schemes are accepted
+
 ---
 
 ## Deployment Checklist
@@ -216,10 +255,11 @@ After applying these fixes, verify:
 - [Flask-CORS Security Advisory](https://github.com/corydolphin/flask-cors/security/advisories)
 - [CVE-2024-6221](https://nvd.nist.gov/vuln/detail/CVE-2024-6221)
 - [OWASP Logging Guidelines](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+- [OWASP URL Validation](https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html)
 - [Flask Security Best Practices](https://flask.palletsprojects.com/en/latest/security/)
 
 ---
 
 **Date**: January 2, 2026  
 **Version**: 2.1.0  
-**Severity**: HIGH (5 issues), MODERATE (3 issues)
+**Severity**: HIGH (6 issues), MODERATE (3 issues)
