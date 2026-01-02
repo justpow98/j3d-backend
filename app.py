@@ -1,6 +1,7 @@
 import os
 import requests
 import smtplib
+import logging
 from email.message import EmailMessage
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, session, send_from_directory, abort
@@ -12,6 +13,9 @@ from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductP
 from authentication import EtsyOAuth, TokenManager, token_required
 from etsy_api import EtsyAPI, OrderSyncManager, schedule_order_prints
 from datetime import datetime, timedelta, timezone
+
+# Configure secure logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +41,10 @@ def create_app(config_name='development'):
     migrate.init_app(app, db)
     CORS(
         app,
-        resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}},
+        resources={r"/api/*": {
+            "origins": app.config['CORS_ORIGINS'],
+            "allow_private_network": False  # CVE-2024-6221 mitigation
+        }},
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
     )
@@ -47,9 +54,9 @@ def create_app(config_name='development'):
         if os.getenv('RUN_DB_UPGRADE') == '1':
             try:
                 upgrade()
-                print("INFO: Applied migrations via RUN_DB_UPGRADE=1")
+                logger.info("Applied migrations via RUN_DB_UPGRADE=1")
             except Exception as e:
-                print(f"WARN: Migration upgrade failed: {e}")
+                logger.warning(f"Migration upgrade failed: {type(e).__name__}")
         elif app.config.get('AUTO_DB_CREATE') or os.getenv('AUTO_DB_CREATE') == '1':
             db.create_all()
     
@@ -62,7 +69,8 @@ def create_app(config_name='development'):
             url, state, code_verifier = EtsyOAuth.get_authorization_url()
             return jsonify({'auth_url': url, 'code_verifier': code_verifier}), 200
         except Exception as e:
-            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
+            logger.exception("Exception in get_login_url")
+            return jsonify({'error': 'Failed to generate login URL'}), 500
     
     @app.route('/api/auth/callback', methods=['POST'])
     def oauth_callback():
@@ -74,10 +82,10 @@ def create_app(config_name='development'):
             if not code_verifier:
                 return jsonify({'error': 'Missing code_verifier'}), 400
             
-            print(f"DEBUG: code_verifier from request: {code_verifier}")
+            logger.info("Processing authorization code with PKCE")
             
             # Exchange code for token
-            print(f"DEBUG: Exchanging code for token with PKCE verifier")
+            logger.info("Exchanging code for token")
             token_data = EtsyOAuth.exchange_code_for_token(code, code_verifier)
             access_token = token_data['access_token']
             refresh_token = token_data.get('refresh_token')
@@ -139,10 +147,8 @@ def create_app(config_name='development'):
             }), 200
             
         except Exception as e:
-            print(f"DEBUG: Exception occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
+            logger.exception("Exception in oauth_callback")
+            return jsonify({'error': 'Authentication failed'}), 500
     
     @app.route('/api/auth/logout', methods=['POST'])
     @token_required
@@ -163,13 +169,11 @@ def create_app(config_name='development'):
     def sync_orders():
         """Sync orders from Etsy"""
         try:
-            print("DEBUG: sync_orders called")
+            logger.info("sync_orders endpoint called")
             
             # Check if token needs refresh
             user = request.user
-            print(f"DEBUG: User from token_required: {user}")
-            print(f"DEBUG: User ID: {user.etsy_user_id}")
-            print(f"DEBUG: User shop_id: {user.shop_id}")
+            logger.info(f"Processing sync for user: {user.etsy_user_id}")
             
             # Make token_expires_at timezone-aware if it isn't
             if user.token_expires_at:
@@ -180,40 +184,38 @@ def create_app(config_name='development'):
                     token_expires_at = user.token_expires_at
                 
                 if token_expires_at <= datetime.now(timezone.utc):
-                    print("DEBUG: Token expired, refreshing...")
+                    logger.info("Token expired, refreshing")
                     # Refresh token
                     token_data = EtsyOAuth.refresh_access_token(user.refresh_token)
                     user.access_token = token_data['access_token']
                     user.refresh_token = token_data.get('refresh_token', user.refresh_token)
                     user.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get('expires_in', 3600))
                     db.session.commit()
-                    print("DEBUG: Token refreshed successfully")
+                    logger.info("Token refreshed successfully")
             
             # Check if user has a shop_id
             if not user.shop_id:
-                print("DEBUG: No shop_id found for user")
+                logger.warning("No shop_id found for user")
                 return jsonify({'error': 'No shop associated with this account'}), 404
             
-            print("DEBUG: Initializing Etsy API")
+            logger.info("Initializing Etsy API")
             # Initialize Etsy API
             etsy_api = EtsyAPI(user.access_token)
             
             shop_id = user.shop_id
-            print(f"DEBUG: Using shop_id: {shop_id}")
+            logger.info(f"Starting order sync for shop_id: {shop_id}")
             
-            print("DEBUG: Starting order sync")
             # Sync orders
             result = OrderSyncManager.sync_orders_from_etsy(user, shop_id, etsy_api, months=6)
-            print(f"DEBUG: Sync result: {result}")
+            logger.info(f"Sync result: {result.get('message', 'Completed')}")
             
             return jsonify(result), 200 if result['success'] else 500
         
         except Exception as e:
-            print(f"DEBUG: Exception in sync_orders: {str(e)}")
-            print(f"DEBUG: Exception type: {type(e).__name__}")
-            import traceback
-            traceback.print_exc()
-            print(f'Exception: {e}'); return jsonify({'error': 'An error occurred', 'success': False}), 500
+            # Log detailed error information securely on the server
+            logger.exception("Exception in sync_orders")
+            # Return generic error to client without exposing implementation details
+            return jsonify({'error': 'An error occurred during order synchronization', 'success': False}), 500
     
     @app.route('/api/orders', methods=['GET'])
     @token_required
@@ -2448,4 +2450,6 @@ def create_app(config_name='development'):
 
 if __name__ == "__main__":
     app = create_app(os.getenv('FLASK_ENV', 'development'))
-    app.run(debug=True, port=5000)
+    # Debug mode controlled by environment configuration, never hardcoded
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(debug=debug_mode, port=5000)
