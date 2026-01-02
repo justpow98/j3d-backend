@@ -1,11 +1,14 @@
 import os
+import requests
+import smtplib
+from email.message import EmailMessage
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, session, send_from_directory, abort
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_migrate import Migrate, upgrade
 from config import config
-from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint
+from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint, AlertSettings
 from authentication import EtsyOAuth, TokenManager, token_required
 from etsy_api import EtsyAPI, OrderSyncManager, schedule_order_prints
 from datetime import datetime, timedelta, timezone
@@ -2293,6 +2296,154 @@ def create_app(config_name='development'):
     def internal_error(error):
         return jsonify({'error': 'Internal server error'}), 500
     
+    # ==================== ALERTS: SETTINGS, PREVIEW, TRIGGER ====================
+    @app.route('/api/alerts/settings', methods=['GET', 'PUT'])
+    @token_required
+    def alert_settings():
+        """Get or update alert destinations (Slack/Discord/email)."""
+        try:
+            current_user = request.user
+            settings = AlertSettings.query.filter_by(user_id=current_user.id).first()
+            if request.method == 'GET':
+                if not settings:
+                    settings = AlertSettings(user_id=current_user.id)
+                    db.session.add(settings)
+                    db.session.commit()
+                return jsonify(settings.to_dict()), 200
+
+            # PUT
+            data = request.get_json() or {}
+            if not settings:
+                settings = AlertSettings(user_id=current_user.id)
+                db.session.add(settings)
+            for field in ['slack_webhook_url', 'discord_webhook_url', 'email_enabled', 'email_to']:
+                if field in data:
+                    setattr(settings, field, data[field])
+            settings.updated_at = datetime.utcnow()
+            db.session.commit()
+            return jsonify(settings.to_dict()), 200
+        except Exception as e:
+            db.session.rollback()
+            print(f'Exception: {e}'); return jsonify({'error': 'Failed to update alert settings'}), 500
+
+    @app.route('/api/alerts/preview', methods=['GET'])
+    @token_required
+    def alert_preview():
+        """Return current low-stock filaments and printer issues for the user."""
+        try:
+            current_user = request.user
+            filaments = Filament.query.filter_by(user_id=current_user.id).all()
+            low_stock = [f.to_dict() for f in filaments if (f.current_amount or 0) <= (f.low_stock_threshold or 0)]
+
+            printers = Printer.query.filter_by(user_id=current_user.id).all()
+            issues = []
+            for p in printers:
+                status = (p.status or '').lower()
+                if any(x in status for x in ['error', 'fail', 'fault', 'offline', 'disconnected']):
+                    issues.append(p.to_dict())
+
+            return jsonify({'low_stock': low_stock, 'printer_issues': issues}), 200
+        except Exception as e:
+            print(f'Exception: {e}'); return jsonify({'error': 'Failed to preview alerts'}), 500
+
+    def _send_webhook(url: str | None, text: str) -> bool:
+        if not url:
+            return False
+        payload = {}
+        # Basic auto-detection of webhook format
+        if 'hooks.slack.com' in url:
+            payload = {'text': text}
+        elif 'discord.com/api/webhooks' in url:
+            payload = {'content': text}
+        else:
+            payload = {'message': text}
+        try:
+            resp = requests.post(url, json=payload, timeout=app.config.get('HTTP_TIMEOUT', 10))
+            return resp.status_code in (200, 204)
+        except Exception as e:
+            print(f"Webhook send failed: {e}")
+            return False
+
+    def _send_email(to_addr: str | None, subject: str, body: str) -> bool:
+        if not to_addr:
+            return False
+        host = os.getenv('SMTP_HOST')
+        port = int(os.getenv('SMTP_PORT', '587'))
+        user = os.getenv('SMTP_USER')
+        password = os.getenv('SMTP_PASS')
+        from_addr = os.getenv('EMAIL_FROM', user or 'alerts@j3d.local')
+        try:
+            msg = EmailMessage()
+            msg['Subject'] = subject
+            msg['From'] = from_addr
+            msg['To'] = to_addr
+            msg.set_content(body)
+
+            with smtplib.SMTP(host, port, timeout=10) as smtp:
+                smtp.starttls()
+                if user and password:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+            return True
+        except Exception as e:
+            print(f"Email send failed: {e}")
+            return False
+
+    @app.route('/api/alerts/trigger', methods=['POST'])
+    @token_required
+    def trigger_alerts():
+        """Trigger alerts for current low stock and printer issues via configured channels."""
+        try:
+            current_user = request.user
+            settings = AlertSettings.query.filter_by(user_id=current_user.id).first()
+            if not settings:
+                settings = AlertSettings(user_id=current_user.id)
+                db.session.add(settings)
+                db.session.commit()
+
+            # Gather data
+            filaments = Filament.query.filter_by(user_id=current_user.id).all()
+            low_stock_filaments = [f for f in filaments if (f.current_amount or 0) <= (f.low_stock_threshold or 0)]
+            printers = Printer.query.filter_by(user_id=current_user.id).all()
+            issue_printers = [p for p in printers if any(x in (p.status or '').lower() for x in ['error', 'fail', 'fault', 'offline', 'disconnected'])]
+
+            if not low_stock_filaments and not issue_printers:
+                return jsonify({'sent': False, 'message': 'No alerts to send'}), 200
+
+            # Compose message
+            lines = [f"Shop: {current_user.username or 'Your shop'}"]
+            if low_stock_filaments:
+                lines.append("\nLow-stock filaments:")
+                for f in low_stock_filaments[:10]:
+                    lines.append(f"- {f.material} {f.color}: {f.current_amount}{f.unit} (threshold {f.low_stock_threshold}{f.unit})")
+                if len(low_stock_filaments) > 10:
+                    lines.append(f"+{len(low_stock_filaments) - 10} more...")
+            if issue_printers:
+                lines.append("\nPrinter issues:")
+                for p in issue_printers[:10]:
+                    lines.append(f"- {p.name}: {p.status}")
+                if len(issue_printers) > 10:
+                    lines.append(f"+{len(issue_printers) - 10} more...")
+            message = "\n".join(lines)
+
+            # Dispatch
+            sent_channels = []
+            if _send_webhook(settings.slack_webhook_url, message):
+                sent_channels.append('slack')
+            if _send_webhook(settings.discord_webhook_url, message):
+                sent_channels.append('discord')
+            if settings.email_enabled and _send_email(settings.email_to, 'J3D Alerts', message):
+                sent_channels.append('email')
+
+            return jsonify({
+                'sent': len(sent_channels) > 0,
+                'channels': sent_channels,
+                'low_stock_count': len(low_stock_filaments),
+                'printer_issue_count': len(issue_printers)
+            }), 200
+        except Exception as e:
+            print(f'Exception: {e}'); return jsonify({'error': 'Failed to trigger alerts'}), 500
+
     return app
 
 if __name__ == "__main__":

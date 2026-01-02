@@ -1,7 +1,6 @@
 version: '3.8'
 
 # J3D - Etsy Orders & Filament Tracker
-# Version: 2.0.0
 
 services:
   postgres:
