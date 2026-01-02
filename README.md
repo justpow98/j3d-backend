@@ -332,8 +332,8 @@ python scripts/init_db.py --config production --url postgresql://... --migrate
 
 Pull and run the latest image:
 ```bash
-docker pull ghcr.io/justpow98/j3d-backend:latest
-docker run -d -p 5000:5000 --env-file .env ghcr.io/justpow98/j3d-backend:latest
+docker pull ghcr.io/justinmpowers/j3d-backend:latest
+docker run -d -p 5000:5000 --env-file .env ghcr.io/justinmpowers/j3d-backend:latest
 ```
 
 Or use Docker Compose:
@@ -343,10 +343,10 @@ docker-compose up -d
 
 ## 📦 Available Images
 
-- `ghcr.io/justpow98/j3d-backend:latest` - Latest main branch build
-- `ghcr.io/justpow98/j3d-backend:main` - Main branch
-- `ghcr.io/justpow98/j3d-backend:main-<sha>` - Specific commit
+- `ghcr.io/justinmpowers/j3d-backend:latest` - Latest main branch build
+- `ghcr.io/justinmpowers/j3d-backend:main` - Main branch
+- `ghcr.io/justinmpowers/j3d-backend:main-<sha>` - Specific commit
 
 ---
 
-**Note:** Replace `justpow98` and `j3d-backend` with your actual GitHub username and repository name.
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G81RI12A)
