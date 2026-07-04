@@ -72,8 +72,14 @@ def test_status_endpoint_returns_502_on_bambu_lan_error(client, user):
 
     assert resp.status_code == 502
     body = resp.get_json()
-    assert 'did not respond' in body['error']
+    # Detail is logged server-side only — the response stays generic (CodeQL:
+    # information exposure through an exception) so internal error text never
+    # reaches the client.
+    assert body['error'] == 'Could not reach printer'
     assert body['connection_status'] == 'error'
+
+    db.session.refresh(connection)
+    assert connection.status == 'error'
 
     db.session.refresh(connection)
     assert connection.status == 'error'
