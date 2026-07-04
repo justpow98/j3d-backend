@@ -20,9 +20,8 @@ def _make_bambu_lan_connection(user, api_url='http://192.168.1.50', serial_numbe
     return connection
 
 
-def test_status_endpoint_returns_parsed_bambu_data(client, user):
-    u, token = user
-    connection = _make_bambu_lan_connection(u)
+def test_status_endpoint_returns_parsed_bambu_data(client, user, token):
+    connection = _make_bambu_lan_connection(user)
 
     fake_print_info = {
         'gcode_state': 'RUNNING',
@@ -58,11 +57,10 @@ def test_status_endpoint_returns_parsed_bambu_data(client, user):
     mock_status.assert_called_once_with('192.168.1.50', 'AC12345', 'abc123')
 
 
-def test_status_endpoint_returns_502_on_bambu_lan_error(client, user):
+def test_status_endpoint_returns_502_on_bambu_lan_error(client, user, token):
     from bambu_lan import BambuLANError
 
-    u, token = user
-    connection = _make_bambu_lan_connection(u)
+    connection = _make_bambu_lan_connection(user)
 
     with patch('app.get_bambu_lan_status', side_effect=BambuLANError('Printer did not respond within timeout')):
         resp = client.get(
@@ -81,13 +79,9 @@ def test_status_endpoint_returns_502_on_bambu_lan_error(client, user):
     db.session.refresh(connection)
     assert connection.status == 'error'
 
-    db.session.refresh(connection)
-    assert connection.status == 'error'
 
-
-def test_status_endpoint_requires_serial_and_access_code(client, user):
-    u, token = user
-    connection = _make_bambu_lan_connection(u, serial_number=None, access_code=None)
+def test_status_endpoint_requires_serial_and_access_code(client, user, token):
+    connection = _make_bambu_lan_connection(user, serial_number=None, access_code=None)
 
     resp = client.get(
         f'/api/printer-connections/{connection.id}/status',

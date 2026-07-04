@@ -21,7 +21,8 @@ from flask_migrate import Migrate, upgrade
 from config import config
 from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint, AlertSettings, ManyfoldSettings
 from authentication import EtsyOAuth, TokenManager, token_required
-from etsy_api import EtsyAPI, OrderSyncManager, schedule_order_prints
+from etsy_api import EtsyAPI, OrderSyncManager, ListingSyncManager, schedule_order_prints
+from manyfold_api import ManyfoldAPI, ManyfoldAPIError
 from bambu_lan import get_bambu_lan_status, BambuLANError
 from datetime import datetime, timedelta, timezone
 
