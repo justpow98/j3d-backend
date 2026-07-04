@@ -9,7 +9,7 @@ from functools import wraps
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 from flask import current_app, request, jsonify, session
-from models import db, User
+from models import db, User, RefreshToken
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class EtsyOAuth:
             'response_type': 'code',
             'client_id': current_app.config['ETSY_CLIENT_ID'],
             'redirect_uri': current_app.config['ETSY_REDIRECT_URI'],
-            'scope': 'transactions_r shops_r email_r profile_r',
+            'scope': 'transactions_r shops_r listings_r email_r profile_r',
             'state': state,
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256'
@@ -149,27 +149,29 @@ class EtsyOAuth:
             raise Exception(f"Failed to refresh token: {str(e)}")
 
 class TokenManager:
-    """Manage JWT tokens for session management"""
-    
+    """Manage JWT access tokens + opaque refresh tokens for session management"""
+
     @staticmethod
     def create_token(user_id, expires_in_hours=None):
-        """Create a JWT token for the user"""
+        """Create a JWT access token for the user"""
         if expires_in_hours is None:
-            expires_in_hours = current_app.config.get('JWT_EXPIRATION_HOURS', 24)
-        
+            expires_in_minutes = current_app.config.get('ACCESS_TOKEN_EXPIRATION_MINUTES', 30)
+        else:
+            expires_in_minutes = expires_in_hours * 60
+
         payload = {
             'user_id': user_id,
             'iat': datetime.utcnow(),
-            'exp': datetime.utcnow() + timedelta(hours=expires_in_hours)
+            'exp': datetime.utcnow() + timedelta(minutes=expires_in_minutes)
         }
-        
+
         token = jwt.encode(
             payload,
             current_app.config['SECRET_KEY'],
             algorithm='HS256'
         )
         return token
-    
+
     @staticmethod
     def verify_token(token):
         """Verify and decode JWT token"""
@@ -184,6 +186,56 @@ class TokenManager:
             return None
         except jwt.InvalidTokenError:
             return None
+
+    @staticmethod
+    def _hash_refresh_token(raw_token):
+        return hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def create_refresh_token(user_id):
+        """Issue a new opaque refresh token, persisting only its hash."""
+        raw_token = secrets.token_urlsafe(48)
+        days = current_app.config.get('REFRESH_TOKEN_EXPIRATION_DAYS', 14)
+        record = RefreshToken(
+            user_id=user_id,
+            token_hash=TokenManager._hash_refresh_token(raw_token),
+            expires_at=datetime.utcnow() + timedelta(days=days)
+        )
+        db.session.add(record)
+        return raw_token
+
+    @staticmethod
+    def create_token_pair(user_id):
+        """Issue a fresh access token + refresh token, committing the refresh row."""
+        access_token = TokenManager.create_token(user_id)
+        refresh_token = TokenManager.create_refresh_token(user_id)
+        db.session.commit()
+        return access_token, refresh_token
+
+    @staticmethod
+    def rotate_refresh_token(raw_token):
+        """Validate a refresh token and exchange it for a new token pair.
+
+        Revokes the presented token (rotation) so it cannot be replayed.
+        Returns (access_token, refresh_token) or None if invalid/expired/revoked.
+        """
+        token_hash = TokenManager._hash_refresh_token(raw_token)
+        record = RefreshToken.query.filter_by(token_hash=token_hash).first()
+        if not record or record.revoked_at is not None or record.expires_at < datetime.utcnow():
+            return None
+
+        record.revoked_at = datetime.utcnow()
+        access_token, refresh_token = TokenManager.create_token_pair(record.user_id)
+        return access_token, refresh_token
+
+    @staticmethod
+    def revoke_refresh_token(raw_token):
+        """Revoke a refresh token (used on logout). No-op if unknown."""
+        token_hash = TokenManager._hash_refresh_token(raw_token)
+        record = RefreshToken.query.filter_by(token_hash=token_hash).first()
+        if record and record.revoked_at is None:
+            record.revoked_at = datetime.utcnow()
+            db.session.commit()
 
 def token_required(f):
     """Decorator to require valid JWT token"""

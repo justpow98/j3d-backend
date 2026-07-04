@@ -28,8 +28,9 @@ class Config:
     # HTTP client configuration
     HTTP_TIMEOUT = float(os.getenv('HTTP_TIMEOUT', '10'))
     
-    # JWT Configuration
-    JWT_EXPIRATION_HOURS = 24
+    # JWT / session configuration
+    ACCESS_TOKEN_EXPIRATION_MINUTES = int(os.getenv('ACCESS_TOKEN_EXPIRATION_MINUTES', '30'))
+    REFRESH_TOKEN_EXPIRATION_DAYS = int(os.getenv('REFRESH_TOKEN_EXPIRATION_DAYS', '14'))
 
 class DevelopmentConfig(Config):
     """Development configuration"""

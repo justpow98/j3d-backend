@@ -7,22 +7,74 @@ import logging
 from email.message import EmailMessage
 from urllib.parse import urlparse, quote
 from dotenv import load_dotenv
+
+# Load environment variables before `config` (and anything importing it) reads
+# os.getenv() at module-import time. Docker deployments set real env vars
+# directly so this ordering never mattered there, but it silently broke
+# .env-file-based local runs (python app.py).
+load_dotenv()
+
 from flask import Flask, jsonify, request, session, send_from_directory, abort, current_app
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_migrate import Migrate, upgrade
 from config import config
-from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint, AlertSettings
+from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint, AlertSettings, ManyfoldSettings
 from authentication import EtsyOAuth, TokenManager, token_required
-from etsy_api import EtsyAPI, OrderSyncManager, schedule_order_prints
+from etsy_api import EtsyAPI, OrderSyncManager, ListingSyncManager, schedule_order_prints
+from manyfold_api import ManyfoldAPI, ManyfoldAPIError
 from datetime import datetime, timedelta, timezone
 
 # Configure secure logging
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
 migrate = Migrate()
+
+
+class EtsyAccessError(Exception):
+    """Raised when a request needs a linked Etsy shop that isn't available."""
+    def __init__(self, message, status_code=422):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _ensure_etsy_access(user):
+    """Ensure user's Etsy access token is fresh and shop_id is resolved.
+
+    Returns (EtsyAPI instance, shop_id). Raises EtsyAccessError if the
+    account has no Etsy shop that can be linked/recovered.
+    """
+    if user.token_expires_at:
+        token_expires_at = user.token_expires_at
+        if token_expires_at.tzinfo is None:
+            # If naive, assume it's UTC
+            token_expires_at = token_expires_at.replace(tzinfo=timezone.utc)
+
+        if token_expires_at <= datetime.now(timezone.utc):
+            logger.info("Token expired, refreshing")
+            token_data = EtsyOAuth.refresh_access_token(user.refresh_token)
+            user.access_token = token_data['access_token']
+            user.refresh_token = token_data.get('refresh_token', user.refresh_token)
+            user.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get('expires_in', 3600))
+            db.session.commit()
+            logger.info("Token refreshed successfully")
+
+    if not user.shop_id:
+        logger.info(f"shop_id missing for user {user.etsy_user_id}, attempting shop lookup")
+        try:
+            shop = EtsyOAuth.get_shop_for_user(user.etsy_user_id, user.access_token)
+        except Exception as shop_err:
+            logger.error(f"Shop lookup recovery failed: {shop_err}")
+            shop = None
+        if shop:
+            user.shop_id = shop.get('shop_id')
+            user.shop_name = shop.get('shop_name', user.shop_name)
+            db.session.commit()
+            logger.info(f"Recovered shop_id={user.shop_id} for user {user.etsy_user_id}")
+        else:
+            raise EtsyAccessError('No Etsy shop linked to this account. Please log out and log back in.')
+
+    return EtsyAPI(user.access_token), user.shop_id
 
 def create_app(config_name='development'):
     """Application factory"""
@@ -146,13 +198,14 @@ def create_app(config_name='development'):
                 db.session.add(user)
             
             db.session.commit()
-            
-            # Create JWT token
-            jwt_token = TokenManager.create_token(user.id)
-            
+
+            # Issue an app-session token pair (short-lived access + refresh)
+            access_token, refresh_token = TokenManager.create_token_pair(user.id)
+
             return jsonify({
                 'success': True,
-                'token': jwt_token,
+                'token': access_token,
+                'refresh_token': refresh_token,
                 'user': {
                     'id': user.id,
                     'etsy_user_id': user.etsy_user_id,
@@ -170,10 +223,26 @@ def create_app(config_name='development'):
     @app.route('/api/auth/logout', methods=['POST'])
     @token_required
     def logout():
-        """Logout user"""
-        # Token is invalidated on frontend by deletion
+        """Logout user: revoke the refresh token server-side (access token expires naturally)."""
+        refresh_token = (request.json or {}).get('refresh_token')
+        if refresh_token:
+            TokenManager.revoke_refresh_token(refresh_token)
         return jsonify({'message': 'Successfully logged out'}), 200
-    
+
+    @app.route('/api/auth/refresh', methods=['POST'])
+    def refresh_token_route():
+        """Exchange a refresh token for a new access + refresh token pair (rotated)."""
+        refresh_token = (request.json or {}).get('refresh_token')
+        if not refresh_token:
+            return jsonify({'error': 'refresh_token is required'}), 400
+
+        result = TokenManager.rotate_refresh_token(refresh_token)
+        if not result:
+            return jsonify({'error': 'Invalid or expired refresh token'}), 401
+
+        access_token, new_refresh_token = result
+        return jsonify({'token': access_token, 'refresh_token': new_refresh_token}), 200
+
     @app.route('/api/auth/user', methods=['GET'])
     @token_required
     def get_user():
@@ -223,64 +292,44 @@ def create_app(config_name='development'):
     def sync_orders():
         """Sync orders from Etsy"""
         try:
-            logger.info("sync_orders endpoint called")
-            
-            # Check if token needs refresh
             user = request.user
-            logger.info(f"Processing sync for user: {user.etsy_user_id}")
-            
-            # Make token_expires_at timezone-aware if it isn't
-            if user.token_expires_at:
-                if user.token_expires_at.tzinfo is None:
-                    # If naive, assume it's UTC
-                    token_expires_at = user.token_expires_at.replace(tzinfo=timezone.utc)
-                else:
-                    token_expires_at = user.token_expires_at
-                
-                if token_expires_at <= datetime.now(timezone.utc):
-                    logger.info("Token expired, refreshing")
-                    # Refresh token
-                    token_data = EtsyOAuth.refresh_access_token(user.refresh_token)
-                    user.access_token = token_data['access_token']
-                    user.refresh_token = token_data.get('refresh_token', user.refresh_token)
-                    user.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get('expires_in', 3600))
-                    db.session.commit()
-                    logger.info("Token refreshed successfully")
-            
-            if not user.shop_id:
-                logger.info(f"shop_id missing for user {user.etsy_user_id}, attempting shop lookup")
-                try:
-                    shop = EtsyOAuth.get_shop_for_user(user.etsy_user_id, user.access_token)
-                    if shop:
-                        user.shop_id = shop.get('shop_id')
-                        user.shop_name = shop.get('shop_name', user.shop_name)
-                        db.session.commit()
-                        logger.info(f"Recovered shop_id={user.shop_id} for user {user.etsy_user_id}")
-                    else:
-                        return jsonify({'error': 'No Etsy shop linked to this account. Please log out and log back in.'}), 422
-                except Exception as shop_err:
-                    logger.error(f"Shop lookup recovery failed: {shop_err}")
-                    return jsonify({'error': 'No Etsy shop linked to this account. Please log out and log back in.'}), 422
-
-            logger.info("Initializing Etsy API")
-            # Initialize Etsy API
-            etsy_api = EtsyAPI(user.access_token)
-
-            shop_id = user.shop_id
+            etsy_api, shop_id = _ensure_etsy_access(user)
             logger.info(f"Starting order sync for shop_id: {shop_id}")
-            
-            # Sync orders
+
             result = OrderSyncManager.sync_orders_from_etsy(user, shop_id, etsy_api, months=6)
             logger.info(f"Sync result: {result.get('message', 'Completed')}")
-            
+
             return jsonify(result), 200 if result['success'] else 500
-        
-        except Exception as e:
+
+        except EtsyAccessError as e:
+            return jsonify({'error': str(e)}), e.status_code
+        except Exception:
             # Log detailed error information securely on the server
             logger.exception("Exception in sync_orders")
             # Return generic error to client without exposing implementation details
             return jsonify({'error': 'An error occurred during order synchronization', 'success': False}), 500
-    
+
+    @app.route('/api/products/sync-etsy', methods=['POST'])
+    @token_required
+    def sync_products_from_etsy():
+        """Sync shop listings (products) from Etsy into ProductProfile rows"""
+        try:
+            user = request.user
+            etsy_api, shop_id = _ensure_etsy_access(user)
+            logger.info(f"Starting listing sync for shop_id: {shop_id}")
+
+            result = ListingSyncManager.sync_listings_from_etsy(user, shop_id, etsy_api)
+            logger.info(f"Sync result: {result.get('message', 'Completed')}")
+
+            return jsonify(result), 200 if result['success'] else 500
+
+        except EtsyAccessError as e:
+            return jsonify({'error': str(e)}), e.status_code
+        except Exception:
+            logger.exception("Exception in sync_products_from_etsy")
+            return jsonify({'error': 'An error occurred during product synchronization', 'success': False}), 500
+
+
     @app.route('/api/orders', methods=['GET'])
     @token_required
     def get_orders():
@@ -1009,7 +1058,115 @@ def create_app(config_name='development'):
         except Exception as e:
             db.session.rollback()
             print(f'Exception: {e}'); return jsonify({'error': 'An error occurred'}), 500
-    
+
+    # ==================== MANYFOLD INTEGRATION ====================
+    @app.route('/api/integrations/manyfold/settings', methods=['GET'])
+    @token_required
+    def get_manyfold_settings():
+        settings = ManyfoldSettings.query.filter_by(user_id=request.user.id).first()
+        return jsonify(settings.to_dict() if settings else {
+            'user_id': request.user.id, 'base_url': None, 'client_id': None, 'has_client_secret': False
+        }), 200
+
+    @app.route('/api/integrations/manyfold/settings', methods=['PUT'])
+    @token_required
+    def update_manyfold_settings():
+        user = request.user
+        data = request.json or {}
+        base_url = (data.get('base_url') or '').strip().rstrip('/')
+        client_id = (data.get('client_id') or '').strip()
+        client_secret = data.get('client_secret')
+
+        if not base_url or not client_id:
+            return jsonify({'error': 'base_url and client_id are required'}), 400
+
+        settings = ManyfoldSettings.query.filter_by(user_id=user.id).first()
+        if not settings:
+            settings = ManyfoldSettings(user_id=user.id)
+            db.session.add(settings)
+
+        settings.base_url = base_url
+        settings.client_id = client_id
+        # Only overwrite the secret if a new one was actually provided —
+        # the client never receives the stored secret back, so a blank
+        # field on save-without-changes must not wipe it out.
+        if client_secret:
+            settings.client_secret = client_secret
+
+        db.session.commit()
+        return jsonify(settings.to_dict()), 200
+
+    def _get_manyfold_api(user):
+        settings = ManyfoldSettings.query.filter_by(user_id=user.id).first()
+        if not settings or not settings.base_url or not settings.client_id or not settings.client_secret:
+            return None
+        return ManyfoldAPI(settings.base_url, settings.client_id, settings.client_secret)
+
+    @app.route('/api/integrations/manyfold/models', methods=['GET'])
+    @token_required
+    def list_manyfold_models():
+        manyfold = _get_manyfold_api(request.user)
+        if not manyfold:
+            return jsonify({'error': 'Manyfold is not configured yet'}), 422
+        try:
+            page = int(request.args.get('page', 1))
+            result = manyfold.list_models(
+                page=page,
+                creator=request.args.get('creator'),
+                collection=request.args.get('collection'),
+                order=request.args.get('order')
+            )
+            return jsonify(result), 200
+        except ManyfoldAPIError as e:
+            logger.error(f"[list_manyfold_models] {e}")
+            return jsonify({'error': 'Could not reach Manyfold'}), 502
+
+    @app.route('/api/integrations/manyfold/creators', methods=['GET'])
+    @token_required
+    def list_manyfold_creators():
+        manyfold = _get_manyfold_api(request.user)
+        if not manyfold:
+            return jsonify({'error': 'Manyfold is not configured yet'}), 422
+        try:
+            page = int(request.args.get('page', 1))
+            result = manyfold.list_creators(page=page)
+            return jsonify(result), 200
+        except ManyfoldAPIError as e:
+            logger.error(f"[list_manyfold_creators] {e}")
+            return jsonify({'error': 'Could not reach Manyfold'}), 502
+
+    @app.route('/api/products/<profile_id>/link-manyfold', methods=['POST'])
+    @token_required
+    def link_manyfold_model(profile_id):
+        user = request.user
+        profile = ProductProfile.query.filter_by(id=profile_id, user_id=user.id).first()
+        if not profile:
+            return jsonify({'error': 'Product profile not found'}), 404
+
+        data = request.json or {}
+        model_id = data.get('manyfold_model_id')
+        model_url = data.get('manyfold_model_url')
+        if not model_id:
+            return jsonify({'error': 'manyfold_model_id is required'}), 400
+
+        profile.manyfold_model_id = str(model_id)
+        profile.manyfold_model_url = model_url
+        db.session.commit()
+        return jsonify(profile.to_dict()), 200
+
+    @app.route('/api/products/<profile_id>/link-manyfold', methods=['DELETE'])
+    @token_required
+    def unlink_manyfold_model(profile_id):
+        user = request.user
+        profile = ProductProfile.query.filter_by(id=profile_id, user_id=user.id).first()
+        if not profile:
+            return jsonify({'error': 'Product profile not found'}), 404
+
+        profile.manyfold_model_id = None
+        profile.manyfold_model_url = None
+        db.session.commit()
+        return jsonify(profile.to_dict()), 200
+
     @app.route('/api/orders/<order_id>/auto-assign-filament', methods=['POST'])
     @token_required
     def auto_assign_filament(order_id):
