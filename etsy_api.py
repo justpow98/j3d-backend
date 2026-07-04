@@ -1,3 +1,4 @@
+import html
 import requests
 from datetime import datetime, timedelta, timezone
 from flask import current_app
@@ -6,9 +7,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _unescape(value):
+    """Etsy returns titles/descriptions with HTML entities escaped (e.g.
+    "St Patrick&#39;s Day"). Decode them for display/storage."""
+    return html.unescape(value) if value else value
+
+
+class EtsyAPIError(Exception):
+    """Etsy API request failure. Carries the HTTP status code when available
+    so callers can distinguish e.g. missing-OAuth-scope (403) from other errors."""
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class EtsyAPI:
     """Interact with Etsy API v3"""
-    
+
     def __init__(self, access_token):
         self.access_token = access_token
         self.base_url = current_app.config['ETSY_API_BASE_URL']
@@ -16,19 +32,20 @@ class EtsyAPI:
             'Authorization': f'Bearer {access_token}',
             'x-api-key': f"{current_app.config['ETSY_CLIENT_ID']}:{current_app.config['ETSY_CLIENT_SECRET']}"
         }
-    
+
     def _make_request(self, method, endpoint, **kwargs):
         """Make a request to Etsy API"""
         url = f"{self.base_url}{endpoint}"
         kwargs['headers'] = self.headers
         kwargs.setdefault('timeout', current_app.config.get('HTTP_TIMEOUT', 10))
-        
+
         try:
             response = requests.request(method, url, **kwargs)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Etsy API error: {str(e)}")
+            status_code = getattr(e.response, 'status_code', None)
+            raise EtsyAPIError(f"Etsy API error: {str(e)}", status_code=status_code)
     
     def get_shop_receipts(self, shop_id, **params):
         """
@@ -50,6 +67,20 @@ class EtsyAPI:
     def get_receipt_transactions(self, shop_id, receipt_id):
         """Get transactions (line items) for a receipt"""
         return self._make_request('GET', f'/application/shops/{shop_id}/receipts/{receipt_id}/transactions')
+
+    def get_shop_listings(self, shop_id, **params):
+        """
+        Get shop listings (products)
+
+        Parameters:
+            shop_id: The shop ID
+            state: active | inactive | draft | expired | sold_out (default active)
+            limit: Number of results (max 100)
+            offset: Offset for pagination
+            includes: comma-separated list, e.g. "Images"
+        """
+        params.setdefault('state', 'active')
+        return self._make_request('GET', f'/application/shops/{shop_id}/listings', params=params)
 
 class OrderSyncManager:
     """Manage syncing orders from Etsy to local database"""
@@ -222,7 +253,7 @@ class OrderSyncManager:
                         for transaction in transactions:
                             item = OrderItem(
                                 etsy_listing_id=str(transaction.get('listing_id', '')),
-                                title=transaction.get('title', ''),
+                                title=_unescape(transaction.get('title', '')),
                                 quantity=transaction.get('quantity', 1),
                                 price=float(transaction.get('price', {}).get('amount', 0)) / 100  # Convert cents to dollars
                             )
@@ -253,6 +284,126 @@ class OrderSyncManager:
                 'success': False,
                 'error': 'An error occurred while syncing orders from Etsy',
                 'message': 'Failed to sync orders'
+            }
+
+
+class ListingSyncManager:
+    """Manage syncing shop listings (products) from Etsy into local ProductProfile rows"""
+
+    @staticmethod
+    def sync_listings_from_etsy(user, shop_id, etsy_api, state='active'):
+        """
+        Fetch all listings in the given state from Etsy and upsert them into
+        ProductProfile, keyed by (user_id, etsy_listing_id).
+
+        Title and description only seed the product once, at creation — both
+        are editable via the product's own Edit form, so re-syncing must not
+        clobber a manual rename/rewrite. Price/thumbnail/quantity/state/url
+        aren't user-editable and are refreshed on every sync. User-authored
+        print-setting fields (filament amount, temps, costs, ...) are always
+        left untouched on existing rows.
+        """
+        try:
+            all_listings = []
+            offset = 0
+            limit = 100
+
+            while True:
+                response = etsy_api.get_shop_listings(
+                    shop_id,
+                    state=state,
+                    limit=limit,
+                    offset=offset,
+                    includes='Images'
+                )
+
+                listings = response.get('results', [])
+                if not listings:
+                    break
+
+                all_listings.extend(listings)
+
+                count = response.get('count', 0)
+                if len(all_listings) >= count:
+                    break
+
+                offset += limit
+
+            created_count = 0
+            updated_count = 0
+            now = datetime.utcnow()
+
+            for listing in all_listings:
+                listing_id = str(listing['listing_id'])
+                price_data = listing.get('price') or {}
+                divisor = price_data.get('divisor', 100) or 100
+                price = float(price_data.get('amount', 0)) / divisor
+
+                images = listing.get('images') or []
+                thumbnail_url = images[0].get('url_170x135') if images else None
+
+                profile = ProductProfile.query.filter_by(
+                    user_id=user.id,
+                    etsy_listing_id=listing_id
+                ).first()
+
+                if profile:
+                    profile.etsy_url = listing.get('url')
+                    profile.etsy_thumbnail_url = thumbnail_url
+                    profile.etsy_price = price
+                    profile.etsy_quantity = listing.get('quantity')
+                    profile.etsy_state = listing.get('state')
+                    profile.etsy_last_synced_at = now
+                    updated_count += 1
+                else:
+                    profile = ProductProfile(
+                        user_id=user.id,
+                        product_name=_unescape(listing.get('title')) or f'Etsy listing {listing_id}',
+                        description=_unescape(listing.get('description')),
+                        standard_filament_amount=0,
+                        etsy_listing_id=listing_id,
+                        etsy_url=listing.get('url'),
+                        etsy_thumbnail_url=thumbnail_url,
+                        etsy_price=price,
+                        etsy_quantity=listing.get('quantity'),
+                        etsy_state=listing.get('state'),
+                        etsy_last_synced_at=now
+                    )
+                    db.session.add(profile)
+                    created_count += 1
+
+            db.session.commit()
+
+            return {
+                'success': True,
+                'total_listings': len(all_listings),
+                'new_products_created': created_count,
+                'updated_products': updated_count,
+                'message': f'Successfully synced {created_count} new products and updated {updated_count} existing products'
+            }
+
+        except EtsyAPIError as e:
+            logger.exception("Failed to sync listings from Etsy")
+            db.session.rollback()
+            if e.status_code == 403:
+                return {
+                    'success': False,
+                    'error': 'Etsy denied access to your shop listings. Reconnect your Etsy account to grant the new listings permission.',
+                    'needs_reconnect': True,
+                    'message': 'Etsy listings permission missing — please reconnect Etsy'
+                }
+            return {
+                'success': False,
+                'error': 'An error occurred while syncing listings from Etsy',
+                'message': 'Failed to sync products'
+            }
+        except Exception:
+            logger.exception("Failed to sync listings from Etsy")
+            db.session.rollback()
+            return {
+                'success': False,
+                'error': 'An error occurred while syncing listings from Etsy',
+                'message': 'Failed to sync products'
             }
 
 

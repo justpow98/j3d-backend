@@ -37,6 +37,18 @@ class User(db.Model):
         }
 
 
+class RefreshToken(db.Model):
+    """Opaque refresh tokens for app-session JWT renewal. Only the hash is stored."""
+    __tablename__ = 'refresh_tokens'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    revoked_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class Customer(db.Model):
     """CRM customer profile"""
     __tablename__ = 'customers'
@@ -555,9 +567,25 @@ class ProductProfile(db.Model):
     labor_minutes = db.Column(db.Integer)
     overhead_cost = db.Column(db.Float)
     target_margin_pct = db.Column(db.Float)
+    # Etsy listing sync (Etsy-owned fields, refreshed by ListingSyncManager — never
+    # hand-edited alongside the print-setting fields above)
+    etsy_listing_id = db.Column(db.String(255), index=True)
+    etsy_url = db.Column(db.String(500))
+    etsy_thumbnail_url = db.Column(db.String(500))
+    etsy_price = db.Column(db.Float)
+    etsy_quantity = db.Column(db.Integer)
+    etsy_state = db.Column(db.String(50))
+    etsy_last_synced_at = db.Column(db.DateTime)
+    # Manyfold link
+    manyfold_model_id = db.Column(db.String(255))
+    manyfold_model_url = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'etsy_listing_id', name='uq_product_profiles_user_etsy_listing'),
+    )
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -581,6 +609,15 @@ class ProductProfile(db.Model):
             'overhead_cost': self.overhead_cost,
             'target_margin_pct': self.target_margin_pct,
             'suggested_price': self._suggested_price(),
+            'etsy_listing_id': self.etsy_listing_id,
+            'etsy_url': self.etsy_url,
+            'etsy_thumbnail_url': self.etsy_thumbnail_url,
+            'etsy_price': self.etsy_price,
+            'etsy_quantity': self.etsy_quantity,
+            'etsy_state': self.etsy_state,
+            'etsy_last_synced_at': self.etsy_last_synced_at.isoformat() if self.etsy_last_synced_at else None,
+            'manyfold_model_id': self.manyfold_model_id,
+            'manyfold_model_url': self.manyfold_model_url,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat()
         }
@@ -755,6 +792,30 @@ class AlertSettings(db.Model):
             'telegram_bot_token': self.telegram_bot_token,
             'telegram_chat_id': self.telegram_chat_id,
             'telegram_enabled': bool(self.telegram_bot_token and self.telegram_chat_id),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class ManyfoldSettings(db.Model):
+    """Per-user connection settings for a self-hosted Manyfold instance."""
+    __tablename__ = 'manyfold_settings'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
+    base_url = db.Column(db.String(500))
+    client_id = db.Column(db.String(255))
+    client_secret = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'base_url': self.base_url,
+            'client_id': self.client_id,
+            'has_client_secret': bool(self.client_secret),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
