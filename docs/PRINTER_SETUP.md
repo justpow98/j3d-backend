@@ -137,6 +137,7 @@ In Bambu Studio > Printer Settings:
    Name: "Workshop Printer"
    Connection Type: "Bambu LAN"
    API URL: http://192.168.X.X
+   Serial Number: printer menu → Settings → Device (or the label on the printer)
    Access Code: 6-character code
    ```
 4. Click "Connect"
@@ -151,8 +152,7 @@ If on different network:
 3. Or: Use VPN on printer if available
 
 **Firewall Settings:**
-- Allow port 8883 (MQTT)
-- Allow port 8080 (HTTP)
+- Allow port 8883 (MQTTS — this is the only port the app actually uses; the printer does not expose an HTTP status API)
 - Or disable firewall between printer and server
 
 **Advantages:**

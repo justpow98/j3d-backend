@@ -31,7 +31,9 @@ def client(app):
 
 @pytest.fixture
 def user(app):
+    from authentication import TokenManager
     u = User(etsy_user_id='123', username='tester', access_token='tok', shop_id='shop1')
     db.session.add(u)
     db.session.commit()
-    return u
+    token = TokenManager.create_token(u.id)
+    return u, token
