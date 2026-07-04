@@ -1,3 +1,4 @@
+import html
 import requests
 from datetime import datetime, timedelta, timezone
 from flask import current_app
@@ -5,6 +6,12 @@ from models import db, Order, OrderItem, Customer, ScheduledPrint, ProductProfil
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _unescape(value):
+    """Etsy returns titles/descriptions with HTML entities escaped (e.g.
+    "St Patrick&#39;s Day"). Decode them for display/storage."""
+    return html.unescape(value) if value else value
 
 
 class EtsyAPIError(Exception):
@@ -246,7 +253,7 @@ class OrderSyncManager:
                         for transaction in transactions:
                             item = OrderItem(
                                 etsy_listing_id=str(transaction.get('listing_id', '')),
-                                title=transaction.get('title', ''),
+                                title=_unescape(transaction.get('title', '')),
                                 quantity=transaction.get('quantity', 1),
                                 price=float(transaction.get('price', {}).get('amount', 0)) / 100  # Convert cents to dollars
                             )
@@ -289,9 +296,12 @@ class ListingSyncManager:
         Fetch all listings in the given state from Etsy and upsert them into
         ProductProfile, keyed by (user_id, etsy_listing_id).
 
-        Only Etsy-owned fields (title/description/price/thumbnail/etc.) are
-        written. User-authored print-setting fields (filament amount, temps,
-        costs, ...) are left untouched on existing rows.
+        Title and description only seed the product once, at creation — both
+        are editable via the product's own Edit form, so re-syncing must not
+        clobber a manual rename/rewrite. Price/thumbnail/quantity/state/url
+        aren't user-editable and are refreshed on every sync. User-authored
+        print-setting fields (filament amount, temps, costs, ...) are always
+        left untouched on existing rows.
         """
         try:
             all_listings = []
@@ -338,7 +348,6 @@ class ListingSyncManager:
                 ).first()
 
                 if profile:
-                    profile.product_name = listing.get('title', profile.product_name)
                     profile.etsy_url = listing.get('url')
                     profile.etsy_thumbnail_url = thumbnail_url
                     profile.etsy_price = price
@@ -349,8 +358,8 @@ class ListingSyncManager:
                 else:
                     profile = ProductProfile(
                         user_id=user.id,
-                        product_name=listing.get('title', f'Etsy listing {listing_id}'),
-                        description=listing.get('description'),
+                        product_name=_unescape(listing.get('title')) or f'Etsy listing {listing_id}',
+                        description=_unescape(listing.get('description')),
                         standard_filament_amount=0,
                         etsy_listing_id=listing_id,
                         etsy_url=listing.get('url'),
