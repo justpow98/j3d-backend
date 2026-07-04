@@ -7,6 +7,13 @@ import logging
 from email.message import EmailMessage
 from urllib.parse import urlparse, quote
 from dotenv import load_dotenv
+
+# Load environment variables before `config` (and anything importing it) reads
+# os.getenv() at module-import time. Docker deployments set real env vars
+# directly so this ordering never mattered there, but it silently broke
+# .env-file-based local runs (python app.py).
+load_dotenv()
+
 from flask import Flask, jsonify, request, session, send_from_directory, abort, current_app
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -21,8 +28,6 @@ from datetime import datetime, timedelta, timezone
 # Configure secure logging
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
 migrate = Migrate()
 
 
