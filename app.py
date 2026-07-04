@@ -15,6 +15,7 @@ from config import config
 from models import db, User, Filament, FilamentUsage, Order, OrderItem, ProductProfile, PrintSession, OrderNote, CommunicationLog, Expense, Customer, CustomerRequest, CustomerFeedback, Printer, CustomerFile, PrinterConnection, BambuMaterial, PrintNotification, ScheduledPrint, AlertSettings
 from authentication import EtsyOAuth, TokenManager, token_required
 from etsy_api import EtsyAPI, OrderSyncManager, schedule_order_prints
+from bambu_lan import get_bambu_lan_status, BambuLANError
 from datetime import datetime, timedelta, timezone
 
 # Configure secure logging
@@ -1995,6 +1996,37 @@ def create_app(config_name='development'):
             if connection.api_url and not _is_safe_printer_url(connection.api_url):
                 return jsonify({'error': 'Stored api_url is invalid'}), 400
 
+            def _bambu_status_from_print_info(print_info):
+                return {
+                    'state': print_info.get('gcode_state', 'UNKNOWN'),
+                    'progress': print_info.get('mc_percent', 0),
+                    'current_layer': print_info.get('layer_num', 0),
+                    'total_layers': print_info.get('total_layer_num', 0),
+                    'bed_temp': print_info.get('bed_temper', 0),
+                    'nozzle_temp': print_info.get('nozzle_temper', 0),
+                    'chamber_temp': print_info.get('chamber_temper', 0),
+                    'print_error': print_info.get('print_error', 0),
+                }
+
+            # Bambu LAN speaks MQTTS, not HTTP — handled entirely separately from
+            # the requests-based connection types below.
+            if connection.connection_type == 'bambu_lan':
+                if not connection.serial_number or not connection.access_code:
+                    return jsonify({'error': 'Serial number and access code required for Bambu LAN'}), 400
+                hostname = urlparse(connection.api_url).hostname or connection.api_url
+                try:
+                    print_info = get_bambu_lan_status(hostname, connection.serial_number, connection.access_code)
+                except BambuLANError as e:
+                    connection.status = 'error'
+                    db.session.commit()
+                    logger.warning("Bambu LAN status request failed for connection %d: %s", int(connection_id), e)
+                    return jsonify({'error': str(e), 'connection_status': 'error'}), 502
+
+                connection.status = 'connected'
+                connection.last_connected_at = datetime.now(timezone.utc)
+                db.session.commit()
+                return jsonify({'status': _bambu_status_from_print_info(print_info), 'connection_status': 'connected'}), 200
+
             headers = {}
             if connection.api_key:
                 if connection.connection_type == 'octoprint':
@@ -2016,38 +2048,14 @@ def create_app(config_name='development'):
                         headers=headers,
                         timeout=5
                     )
-                elif connection.connection_type == 'bambu_lan':
-                    # Bambu LAN: MQTT is the primary protocol; HTTP fallback on port 8988 may work
-                    # on some firmware. We try both formats gracefully.
-                    auth = ('bblp', connection.access_code) if connection.access_code else None
-                    try:
-                        response = requests.get(
-                            f"{connection.api_url}:8988/api/status",
-                            auth=auth, timeout=5
-                        )
-                    except Exception:
-                        response = requests.get(
-                            f"{connection.api_url}/api/status",
-                            auth=auth, timeout=5
-                        )
                 else:
                     return jsonify({'error': 'Unsupported connection type'}), 400
 
                 response.raise_for_status()
                 status_data = response.json()
 
-                if connection.connection_type in ['bambu_cloud', 'bambu_lan']:
-                    print_info = status_data.get('print', status_data)
-                    status_data = {
-                        'state': print_info.get('gcode_state', 'UNKNOWN'),
-                        'progress': print_info.get('mc_percent', 0),
-                        'current_layer': print_info.get('layer_num', 0),
-                        'total_layers': print_info.get('total_layer_num', 0),
-                        'bed_temp': print_info.get('bed_temper', 0),
-                        'nozzle_temp': print_info.get('nozzle_temper', 0),
-                        'chamber_temp': print_info.get('chamber_temper', 0),
-                        'print_error': print_info.get('print_error', 0),
-                    }
+                if connection.connection_type == 'bambu_cloud':
+                    status_data = _bambu_status_from_print_info(status_data.get('print', status_data))
 
                 connection.status = 'connected'
                 connection.last_connected_at = datetime.now(timezone.utc)

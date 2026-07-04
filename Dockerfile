@@ -71,5 +71,7 @@ EXPOSE 5000
 # Use entrypoint for database initialization
 ENTRYPOINT ["docker-entrypoint.sh"]
 
-# Run the application
-CMD ["python", "app.py"]
+# Run the application under a real WSGI server — the Flask dev server used
+# here previously is single-threaded and lets one slow outbound request
+# (an unresponsive printer, a slow third-party API) block the entire site.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "60", "wsgi:app"]
