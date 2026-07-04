@@ -33,9 +33,18 @@ migrate = Migrate()
 
 
 class EtsyAccessError(Exception):
-    """Raised when a request needs a linked Etsy shop that isn't available."""
-    def __init__(self, message, status_code=422):
-        super().__init__(message)
+    """Raised when a request needs a linked Etsy shop that isn't available.
+
+    `user_message` is a deliberately safe, hand-authored string meant to be
+    shown to the client. Callers must read it via that explicit attribute,
+    never via str(e)/e.args — relying on generic exception text reaching an
+    HTTP response is exactly the "information exposure through an exception"
+    pattern CodeQL flags, since nothing then stops a future raise from
+    accidentally embedding something sensitive.
+    """
+    def __init__(self, user_message, status_code=422):
+        super().__init__(user_message)
+        self.user_message = user_message
         self.status_code = status_code
 
 
@@ -284,7 +293,10 @@ def create_app(config_name='development'):
         user.shop_id = shop['shop_id']
         user.shop_name = shop.get('shop_name', shop_name)
         db.session.commit()
-        logger.info(f"Linked shop {user.shop_name} (id={user.shop_id}) for user {user.etsy_user_id}")
+        # repr() escapes control characters (\r, \n) in shop_name, which can
+        # otherwise come from the user-submitted request body and be used to
+        # forge/inject fake log lines.
+        logger.info("Linked shop %r (id=%r) for user %r", user.shop_name, user.shop_id, user.etsy_user_id)
         return jsonify({'shop_id': user.shop_id, 'shop_name': user.shop_name}), 200
 
     # ==================== ORDER ROUTES ====================
@@ -303,7 +315,7 @@ def create_app(config_name='development'):
             return jsonify(result), 200 if result['success'] else 500
 
         except EtsyAccessError as e:
-            return jsonify({'error': str(e)}), e.status_code
+            return jsonify({'error': e.user_message}), e.status_code
         except Exception:
             # Log detailed error information securely on the server
             logger.exception("Exception in sync_orders")
@@ -325,7 +337,7 @@ def create_app(config_name='development'):
             return jsonify(result), 200 if result['success'] else 500
 
         except EtsyAccessError as e:
-            return jsonify({'error': str(e)}), e.status_code
+            return jsonify({'error': e.user_message}), e.status_code
         except Exception:
             logger.exception("Exception in sync_products_from_etsy")
             return jsonify({'error': 'An error occurred during product synchronization', 'success': False}), 500
