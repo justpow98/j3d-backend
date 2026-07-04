@@ -38,14 +38,15 @@ class ManyfoldAPI:
                     'grant_type': 'client_credentials',
                     'client_id': self.client_id,
                     'client_secret': self.client_secret,
-                    'scope': 'public read'
+                    'scope': 'read'
                 },
                 timeout=current_app.config.get('HTTP_TIMEOUT', 10)
             )
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             status_code = getattr(e.response, 'status_code', None)
-            raise ManyfoldAPIError(f"Manyfold token request failed: {str(e)}", status_code=status_code)
+            body = getattr(e.response, 'text', '')
+            raise ManyfoldAPIError(f"Manyfold token request failed: {str(e)} | body={body}", status_code=status_code)
 
         token_data = response.json()
         access_token = token_data['access_token']
@@ -58,7 +59,12 @@ class ManyfoldAPI:
 
     def _make_request(self, method, path, **kwargs):
         token = self._get_token()
-        kwargs['headers'] = {'Authorization': f'Bearer {token}'}
+        # Without an explicit Accept header, Manyfold's content negotiation falls
+        # back to its HTML web UI instead of the JSON API for these same paths.
+        kwargs['headers'] = {
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/vnd.manyfold.v0+json, application/json'
+        }
         kwargs.setdefault('timeout', current_app.config.get('HTTP_TIMEOUT', 10))
 
         try:
@@ -66,8 +72,9 @@ class ManyfoldAPI:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            status_code = getattr(e.response, 'status_code', None)
-            raise ManyfoldAPIError(f"Manyfold API error: {str(e)}", status_code=status_code)
+            status_code = getattr(e.response, 'status_code', getattr(response, 'status_code', None))
+            body = getattr(e.response, 'text', getattr(response, 'text', ''))[:500]
+            raise ManyfoldAPIError(f"Manyfold API error: {str(e)} | status={status_code} | body={body!r}", status_code=status_code)
 
     def list_models(self, page=1, creator=None, collection=None, order=None):
         """Browse models. Manyfold has no free-text search — callers filter client-side."""
